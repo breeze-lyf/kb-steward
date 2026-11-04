@@ -2,7 +2,6 @@
 title: "KB Steward：让两个 Agent 在团队群聊里把知识库改对（基于 Switch）"
 subtitle: "群里一句「这个过时了」，变成一次由文档负责人审批、带影响分析和审计痕迹的 git 提交。记录我如何用 Switch 的 Agent 协议搭起来、如何加上中文与知识治理，以及一路踩过的坑。"
 tags: [switch, ai-agents, 知识库, 知识治理, python, 黑客松]
-cover_image: ./img/cover-title.png
 canonical_url: "https://breeze-lyf.hashnode.dev/kb-steward-teaching-two-agents-to-fix-the-wiki-from-team-chat-on-switch"
 ---
 
@@ -23,7 +22,7 @@ canonical_url: "https://breeze-lyf.hashnode.dev/kb-steward-teaching-two-agents-t
 所以这次黑客松我做了 **KB Steward**：两个通过 [Switch](https://github.com/sandbox-quantum/switch) 接入团队频道的 Agent，把群聊里随口的一句纠正，变成**经过审核的文档变更**，而文档负责人始终握有最终决定权。
 
 - 📺 演示视频（英文，1:58）：https://youtu.be/8xKwF6o_T2U
-- 💻 代码仓库（MIT）：https://github.com/breeze-lyf/kb-steward （[中文 README](https://github.com/breeze-lyf/kb-steward/blob/main/README.zh-CN.md)）
+- 💻 代码仓库（MIT）：https://github.com/breeze-lyf/kb-steward （[中文 README](https://github.com/breeze-lyf/kb-steward/blob/main/docs/zh-CN/README.zh-CN.md)）
 
 > 仓库与截图中的公司数据全部是虚构示例（「Northwind Example Co.」/「北风示例公司」），人物均为演示角色：`newhire`（新员工）、`finance-lead`（财务负责人）、`support-lead`（客服负责人）。
 
@@ -35,11 +34,11 @@ canonical_url: "https://breeze-lyf.hashnode.dev/kb-steward-teaching-two-agents-t
 2. **`@kb-curator`（管理员）**：旁听整个房间。一旦有人*纠正*了某个回答——不需要 @ 它——它就在知识库上跑一个带工具调用的循环（`search_kb` / `grep` / `read_file` / `write_file`），找出**所有**写着错误事实的文档，在独立分支 `kb/KB-n` 上提交修改，附上**影响分析**，用该分支**预览新答案**，再把 diff 作为提案 **KB-n** 发回线程。
 3. **只有文档负责人能批准**（`approve KB-n` 或 `批准 KB-n`）。批准后以 `Approved-by:` / `Requested-by:` / `Impact:` git trailer 合并，重建索引，在 Switch 房间文档 **「KB decision log」（决策日志）** 追加一行，并把最初的问题交还给答疑员，在同一线程里重新作答。
 
-![答疑员的回答带引用、负责人、审阅日期和过期标记](./img/01-answer-stale-flags.png)
+*答疑员的回答带引用、负责人、审阅日期和过期标记*
 
 英文版录制中，新员工问餐补。回答是「每天 $50」，引用 `finance/expense-policy.md`（⚠️ 已 967 天未审）和 `finance/travel-faq.md`（⚠️ 653 天）。随后 `finance-lead` 在线程里回了一句：*「过时了，7 月起是每天 $65，超过 $25 需要票据。」* 没人 @ 管理员，但它照样发出了 KB-1——**改了两个文件**，因为 FAQ 也抄了旧数字。这正是人工维护最容易漏的地方。
 
-![KB-1：管理员对制度和 FAQ 两个文件的 diff，以及预览答案](./img/02-kb1-diff.png)
+*KB-1：管理员对制度和 FAQ 两个文件的 diff，以及预览答案*
 
 ## 架构
 
@@ -118,7 +117,7 @@ await agent.op("send_targeted_message", target_names=["kb-curator"], thread_id=t
                body=f"hand-off · CONFLICT · {conflict.get('summary','')} · files: {', '.join(cites)} · question: {q}")
 ```
 
-![冲突：30 天 vs 14 天，转交管理员，由管理员询问客服负责人](./img/05-conflict-handoff.png)
+*冲突：30 天 vs 14 天，转交管理员，由管理员询问客服负责人*
 
 ### 6. 房间文档做审计日志
 
@@ -132,17 +131,17 @@ git 里有完整历史，但群里的同事不该为了看「改了什么」去�
 
 **负责人闸门。** 每篇文档 front matter 里有 `owner:` 字段，环境变量把负责人映射到聊天账号（如 `APPROVERS=finance:finance-lead;support:support-lead`）。审批人身份取自 Switch 事件里的 `sender_name`，来自聊天平台本身，而不是模型的判断。演示里客服负责人试图批准财务文档的修改，被直接拒绝：「只有 @finance-lead 能签字，未合并任何内容。」
 
-![support-lead 的批准被拒绝：财务文档只能由财务签字](./img/03-refused-approval.png)
+*support-lead 的批准被拒绝：财务文档只能由财务签字*
 
 **合并就是普通的 git merge。** `merge --no-ff` 加 `Approved-by` / `Requested-by` / `Impact` trailer，任何人都能用 `git log` 审计、用 `git revert` 回滚。
 
 **编辑工具有围栏。** 管理员的 `write_file` 只能改提案自己 worktree 里**已存在**的 `.md` 文件，且只能改与更正同语言的知识库，其他路径一律拒绝。没有负责人批准，任何改动都进不了 `main`。
 
-![finance-lead 批准：合并、重建索引、写日志，答疑员重新回答 $65](./img/04-owner-merge-recheck.png)
+*finance-lead 批准：合并、重建索引、写日志，答疑员重新回答 $65*
 
 英文演示中 KB-1 合并为 `f7f2723`，索引重建为 7 篇文档 27 个段落，答疑员在同一线程重新回答「每天 $65……超过 $25 需留票据」。退款冲突同理：`support-lead` 一句「30 天是对的，话术模板错了」，变成 KB-2，合并为 `99ba48b`。
 
-![审计链路：git trailer + Switch 房间文档](./img/06-audit-trail.png)
+*审计链路：git trailer + Switch 房间文档*
 
 我想强调的治理观点是：**企业知识库的问题从来不是「AI 能不能写」，而是「谁有权改、改了会影响什么、改了能不能追溯」。** 让 AI 发起变更、让人拍板、让每次决策同时留在 git 和群里，这才是能在企业里落地的形态。
 
@@ -240,7 +239,7 @@ docker compose up -d --build                 # 初始化知识库、演示账号
 ## 链接
 
 - 代码仓库：https://github.com/breeze-lyf/kb-steward
-- 中文 README（含中文实跑记录）：https://github.com/breeze-lyf/kb-steward/blob/main/README.zh-CN.md
+- 中文 README（含中文实跑记录）：https://github.com/breeze-lyf/kb-steward/blob/main/docs/zh-CN/README.zh-CN.md
 - 演示视频（英文）：https://youtu.be/8xKwF6o_T2U
 - 英文原文：https://breeze-lyf.hashnode.dev/kb-steward-teaching-two-agents-to-fix-the-wiki-from-team-chat-on-switch
 - Switch：https://github.com/sandbox-quantum/switch · 文档：https://docs.switchagents.ai/

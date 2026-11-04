@@ -4,50 +4,66 @@
 
 **Track:** Track 01 — Best Business Workflow
 
-**Tagline (one line):** AI does the impact analysis and multi-file revision; people keep approval and audit — corrections typed in chat become owner-approved git changes across every affected doc, in English or Chinese.
+**Tagline (one line):** Close knowledge gaps, correct past answers, and review stale docs from team chat — with owner approval and a git audit trail.
 
 **Repository:** https://github.com/breeze-lyf/kb-steward
 
-**Demo video:** https://youtu.be/HDlKPY9HajU (v2, 2:13 — English loop, Chinese loop, impact analysis, knowledge gaps, review report; v1: https://youtu.be/8xKwF6o_T2U)
+**Demo video (v3, under 3:00):** VIDEO_URL_V3 — placeholder, link added after upload.
+
+**Previous versions:** [v2](https://youtu.be/HDlKPY9HajU) · [v1](https://youtu.be/8xKwF6o_T2U).
 
 **Team:** solo — breeze
 
 **Short description:**
-KB Steward puts two agents into a Switch room with the team. `@kb-answerer` answers policy questions
-only from a git-versioned knowledge base, with citations, owners and review dates, and flags stale or
-conflicting docs instead of guessing. `@kb-curator` listens to the whole room: when a person corrects an
-answer, it runs a tool-using agent loop over the repo, finds every document carrying the wrong fact,
-commits the fix on its own branch, previews the new answer from that branch and posts the diff. Only the
-doc's owner can approve; approval merges with Approved-by/Requested-by trailers, rebuilds the index, logs
-the decision in a Switch room document, and the answerer re-answers the original question in-thread.
+KB Steward puts two agents into a Switch room. `@kb-answerer` answers from a git-versioned KB with
+citations, owners and review dates, flagging stale or conflicting sources instead of guessing.
+`@kb-curator` overhears corrections, finds affected documents, drafts changes on a branch, and shows
+Impact, diff and a preview answer. Only the documents' configured owner approvers can publish changes.
 
-Governance controls: stale flags and a stale sweep that @-mentions owners (`@kb-curator stale report`,
-`scripts/stale-report.py`), conflict hand-off, an **Impact** block on every proposal (files, sections, numeric
-risk such as `$50 → $65`), owner-gated approval, `Approved-by`/`Requested-by`/`Impact` git trailers, and two room
-documents: "KB decision log" and "KB knowledge gaps" (questions the KB couldn't answer). It is bilingual: a
-Chinese question gets a Chinese answer with the same citations/owner/review flags, Chinese corrections
-(“这个过时了，现在是每天 ¥120”) draft proposals, and `批准 KB-n` / `驳回 KB-n` work as approvals.
+In v3, unanswered questions become `G-n` entries in the **KB knowledge gaps** room document. An owner's
+thread reply becomes a proposal for a new document or section; publication closes the gap, @-mentions
+the original asker and triggers a cited re-check. An answers ledger tracks cited answers and sections
+(excluding uncited, low-confidence/conflicting answers and agent re-checks). After a proposal merges,
+past askers affected by changed sections get an @-correction in their original thread:
+"@newhire correction: earlier I told you $50; KB-2 corrected it to $65."
+Impact previews **N past answers in M threads will be corrected**; duplicate thread corrections are suppressed.
 
-**Problem it solves:** Internal docs drift. Corrections happen in chat and are lost, so the same wrong
-answer repeats. Existing chat bots answer from stale docs and never fix them. KB Steward makes the
-correction the update, while keeping humans as the authority.
+`@kb-curator stale report` and periodic sweeps (`REVIEW_SWEEP_HOURS`) open review threads for overdue
+documents, subject to a per-sweep cap. Switch cards offer **Still valid / Needs update / Not mine**.
+Non-owner clicks are refused and cards re-issued. Still valid commits `last_reviewed` with `Reviewed-by`
+trailers; Not mine reassigns ownership through a second card with an `Owner-change` trailer; Needs update
+feeds the proposal flow. Typed replies are a fallback.
+
+**Dashboard:** https://fde.yufeng.fun/kb/ — coverage, stale rate, conflicts, gaps, top questions,
+per-owner to-dos, recent decisions with git trailers and retro-correction count. One-click review actions
+require login and the same owner check; kb-curator executes changes as the single git writer.
+
+**GitHub open-PR mode:** `KB_SOURCE=github` opens a docs-repo PR after owner approval, with Impact and
+trailers, and posts the link to chat. Polling detects merge (no webhook); only then are the index rebuilt
+and retro corrections sent. Demo docs repo: https://github.com/breeze-lyf/kb-steward-demo-docs .
+
+PR mode was verified end-to-end against real GitHub from a development box (PR #1 in the demo docs repo: https://github.com/breeze-lyf/kb-steward-demo-docs/pull/1); the live instance runs local-merge mode.
+
+Notion/Confluence are adapter interfaces only, not implemented integrations.
+One-command demo reset: `scripts/demo-start.sh [en|zh|both]`.
+
+**Problem it solves:** Internal docs drift, corrections disappear in chat, and people keep receiving old
+answers. KB Steward turns those corrections into approved updates and follows up with affected people.
 
 **How Switch is used:**
-- Two agents registered through Switch's agent API with their own identities; one shared room created with `create_room` and room instructions.
-- WebSocket event stream with `filter=all`: the answerer acts only when `addressed`, the curator overhears corrections without being mentioned.
-- Threaded replies with `post_message(thread_id)`; `read_context` to read the thread a correction belongs to.
-- Agent-to-agent hand-offs with `send_targeted_message` (answerer → curator on conflicts/gaps; curator → answerer to re-check after a merge).
-- Switch room documents as shared governance records: "KB decision log" (audit) and "KB knowledge gaps".
-- `POST /agents/{id}/message` for the scheduled stale sweep (`scripts/stale-report.py --post`).
-- Typing indicators while the model works; gateway addressing policy so every room member can call the agents.
-- Channel: Switch standalone stack with bundled Mattermost; the same agents work unchanged in Slack/Teams/Discord/Telegram via Switch bridges.
 
-**Tech stack:** Switch 0.31.0 (core, gateway, Mattermost bridge), Python 3.12 (httpx, websockets), git worktrees, BM25 retrieval, OpenAI-compatible LLM (v1 video run: DeepSeek; v2 video and live instance: GPT via an OpenAI-compatible relay), CJK-bigram BM25 for Chinese, Docker Compose.
+- Two registered agent identities in one room, with WebSocket `filter=all`; answerer reacts when addressed, curator overhears corrections.
+- Threaded replies, `read_context`, and `send_targeted_message` for conflict/gap hand-offs and post-merge re-checks.
+- Shared **KB decision log** and **KB knowledge gaps** room documents.
+- Approval cards through `POST /agent-sessions/{id}/approvals`, outcome polling, delivery acknowledgement and card closure; curator checks owner authorization independently.
+- Typing indicators and gateway addressing policy. Demo runs on Switch's bundled Mattermost; enterprise bridges are the rollout path.
 
-**What's next:** push merged changes as PRs to a real docs repo (GitHub/Confluence/enterprise wiki), owner re-confirmation buttons on the stale sweep, Slack/Teams/DingTalk-style enterprise chat rollout.
+**Tech stack:** Switch 0.31.0, Python 3.12, git worktrees, section-level BM25 retrieval,
+OpenAI-compatible LLM, Docker Compose; local merge and GitHub PR publishing adapters.
+
+**What's next:** hosted GitHub mode on the live instance, implemented Notion/Confluence adapters,
+and enterprise chat rollout.
 
 **Blog post (optional):** https://breeze-lyf.hashnode.dev/kb-steward-teaching-two-agents-to-fix-the-wiki-from-team-chat-on-switch
 
-**Chinese blog post (中文博文):** https://breeze-lyf.hashnode.dev/kb-steward-agent-switch
-
-**README:** English [README.md](README.md) · 中文 [README.zh-CN.md](README.zh-CN.md)
+**README:** [README.md](README.md)

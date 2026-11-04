@@ -1,6 +1,6 @@
 # KB Steward —— 把知识库治理放进团队群聊
 
-[English](README.md) · **简体中文**
+[English](../../README.md) · **简体中文**
 
 > Flip the Switch 黑客松 · Track 01（最佳业务流程）· 基于 [Switch](https://github.com/sandbox-quantum/switch) 构建
 
@@ -31,7 +31,7 @@ KB Steward 把团队频道变成知识库的"受控变更流程"：
 
 ## 演示
 
-📺 视频：[KB Steward demo v2（2:13，英文主线 + 中文闭环）](https://youtu.be/HDlKPY9HajU) · [v1（1:58）](https://youtu.be/8xKwF6o_T2U)，分镜见 [DEMO.md](DEMO.md)。
+📺 视频：[KB Steward demo v2（2:13，英文主线 + 中文闭环）](https://youtu.be/HDlKPY9HajU) · [v1（1:58）](https://youtu.be/8xKwF6o_T2U)，分镜见 [DEMO.md](../../DEMO.md)。
 📝 博客：[英文版](https://breeze-lyf.hashnode.dev/kb-steward-teaching-two-agents-to-fix-the-wiki-from-team-chat-on-switch) · [中文版](https://breeze-lyf.hashnode.dev/kb-steward-agent-switch)
 
 2026-11-04 在同一套环境上的中文实跑记录（`kb-seed/zh/`，略有删节）：
@@ -74,7 +74,7 @@ Requested-by: support-lead
 Impact: 数值类制度变更（7 天 → 30 天），所有引用该数值的回答都会随之变化
 ```
 
-英文完整实跑记录见 [README.md](README.md#demo)。
+英文完整实跑记录见 [README.md](../../README.md#demo)。
 
 ## Switch 在这里做了什么（项目核心）
 
@@ -178,4 +178,4 @@ say finance-lead "approve KB-1" --reply-last
 
 ## 许可证
 
-MIT，见 [LICENSE](LICENSE)。Switch 版权归其作者所有，遵循其自身许可证。
+MIT，见 [LICENSE](../../LICENSE)。Switch 版权归其作者所有，遵循其自身许可证。

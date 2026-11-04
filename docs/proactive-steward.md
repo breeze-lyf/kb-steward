@@ -109,7 +109,7 @@ current owner's approvers can select the new owner. Reassignment changes only
 front matter and immediately issues a review to the new owner's approvers.
 Needs update routes the subsequent thread reply through the existing correction
 classifier and proposal approval flow with the document path in context;
-`don't know` / `不知道` records a knowledge gap.
+`don't know` (or its Chinese equivalent) records a knowledge gap.
 
 `reviews.json` under `KBS_STATE_DIR` stores a persisted session UUID and review
 rows (ID, path, owner, previous review date/age, thread, request ID, status,
