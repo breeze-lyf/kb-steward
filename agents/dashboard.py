@@ -248,7 +248,11 @@ class Dashboard:
 
     def overview(self, session, flash=''):
         s = self.summary()
-        body = '<p>A live view of your knowledge base and the work keeping it trustworthy.</p>'
+        source_repo = os.environ.get('GITHUB_REPO', '')
+        publishing = [p for p in read(self.state / 'proposals.json', {}).values() if p.get('status') == 'pr_open']
+        source_label = ('<a href="https://github.com/' + esc(source_repo) + '">github: ' + esc(source_repo) + '</a>') if os.environ.get('KB_SOURCE') == 'github' and source_repo else 'local'
+        body = '<section><h2>Publishing</h2><p>Doc source: ' + source_label + '</p>' + self.table(['Proposal', 'PR', 'Status'], [[esc(p['id']), '<a href="' + esc(p['pr_url']) + '">PR #' + str(p['pr_number']) + '</a>', 'pr_open'] for p in publishing]) + '</section>'
+        body += '<p>A live view of your knowledge base and the work keeping it trustworthy.</p>'
         if flash:
             body += f'<div class="notice">{esc(flash)}</div>'
         body += '<div class="grid">'

@@ -11,6 +11,8 @@ x-agent: &agent
   env_file: agents.env
   volumes:
     - kbdata:/data
+    # Set GITHUB_TOKEN_HOST_FILE to a host file with mode 0600 for GitHub mode.
+    - ${GITHUB_TOKEN_HOST_FILE:-/dev/null}:/run/secrets/github_token:ro
   networks: [switch]
   restart: unless-stopped
 

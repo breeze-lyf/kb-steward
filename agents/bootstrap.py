@@ -46,6 +46,11 @@ ROOM_INSTRUCTIONS = {"en": ROOM_INSTRUCTIONS_EN, "zh": ROOM_INSTRUCTIONS_ZH}.get
 def seed_kb() -> None:
     if (KB_REPO / ".git").exists():
         return
+    from docsource import make_source
+    source = make_source()
+    if source.name == 'github':
+        source.clone()
+        return
     KB_REPO.mkdir(parents=True, exist_ok=True)
     for item in SEED.iterdir():
         if KB_LANG == "en" and item.name == "zh":

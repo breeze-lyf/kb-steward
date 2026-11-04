@@ -22,6 +22,7 @@ import shutil
 from pathlib import Path
 
 import kb_core
+from docsource import make_source
 import ledger
 import llm
 import review
@@ -101,7 +102,10 @@ T = {
 }
 T['en'].update({'review_due': '🧹 Review due: `{path}` ({title}) · owner **{owner}** · last reviewed {last_reviewed} ({age} days). {tags} please confirm with one click below, or reply `still valid` / `needs update` / `not mine` in this thread.', 'review_denied': "⛔ @{user} isn't an owner of `{path}` ({owner}: {allowed}). Card re-issued.", 'review_valid': '✅ {id}: `{path}` still valid · `{commit}`.', 'review_update': "@{user} thanks — reply in this thread with what changed and I'll draft a proposal for approval (or say `don't know` and I'll log it as a knowledge gap).", 'review_reassign': 'Who should own `{path}`?', 'review_reassigned': '✅ {id}: `{path}` reassigned · `{commit}`.', 'review_prompt': 'Is this document still accurate?', 'review_options': ['Still valid', 'Needs update', 'Not mine']})
 T['zh'].update({'review_due': '🧹 复核提醒：`{path}`（{title}）· 负责人 **{owner}** · 上次复核 {last_reviewed}（{age} 天）。{tags} 请点击下方按钮，或在本帖回复 `仍然有效` / `需要更新` / `不归我`。', 'review_denied': '⛔ @{user} 不是 `{path}` 的负责人（{owner}：{allowed}）。已重新发卡。', 'review_valid': '✅ {id}：`{path}` 仍然有效 · `{commit}`。', 'review_update': '@{user} 谢谢，请在本帖说明变化，我会起草提案请负责人审批；也可回复“不知道”，我会记录知识缺口。', 'review_reassign': '`{path}` 应由谁负责？', 'review_reassigned': '✅ {id}：`{path}` 已转交 · `{commit}`。', 'review_prompt': '文档是否仍然准确？', 'review_options': ['仍然有效', '需要更新', '不归我']})
+T['en'].update(pr_opened='🔀 {pid} approved by @{user} — opened PR #{n}: {url}. It goes live (and past answers get corrected) when the PR is merged on GitHub.', pr_merged='✅ PR #{n} for {pid} merged on GitHub by @{login} as `{sha7}`. Index rebuilt: {sections} sections from {docs} docs.', pr_closed='PR #{n} for {pid} was closed without merging; nothing changed.', upstream='🔄 Synced {k} doc change(s) from GitHub main ({old7}→{new7}).')
+T['zh'].update(pr_opened='🔀 {pid} 已由 @{user} 批准 — 已创建 PR #{n}：{url}。在 GitHub 合并后生效，并更正历史回答。', pr_merged='✅ {pid} 的 PR #{n} 已由 @{login} 在 GitHub 合并为 `{sha7}`。索引已重建：{docs} 篇文档、{sections} 个章节。', pr_closed='{pid} 的 PR #{n} 已关闭且未合并；知识库未变更。', upstream='🔄 已从 GitHub main 同步 {k} 个文档变更（{old7}→{new7}）。')
 VERB_ZH = {"approve": "批准", "reject": "驳回"}
+source = make_source()
 lock = asyncio.Lock()
 pending: dict[str, dict] = {}  # thread_id -> context of an open question to an owner
 
@@ -568,21 +572,39 @@ async def decide(p: dict, verb: str, pid: str, reason: str, thread: str | None) 
             return
         retro = ledger.affected(prop["impact"]["files"])
         rn, rm = ledger.summarize(retro)
-        git(KB_REPO, "-c", "user.name=kb-curator", "-c", "user.email=kb-curator@example.invalid",
-            "merge", "--no-ff", "-q", prop["branch"], "-m", f"Merge {pid}: {prop['title']}",
-            "-m", f"Retro-corrections: {rn} answers in {rm} threads",
-            "-m", f"Approved-by: {user} in Switch room kb-ops\nRequested-by: {prop['requested_by']}\n"
-                  f"Impact: {(prop.get('impact') or {}).get('risk', 'n/a')}")
-        retro = ledger.affected(prop["impact"]["files"])
-        commit = git(KB_REPO, "rev-parse", "--short", "HEAD")
-        git(KB_REPO, "worktree", "remove", "--force", prop["dir"], check=False)
-        git(KB_REPO, "branch", "-d", prop["branch"], check=False)
-        idx = kb_core.KBIndex(KB_REPO)
-        idx.refresh()
-        prop.update(status="merged", commit=commit, approved_by=user)
-        save(PROPS, props)
-    await agent.reply(t["merged"].format(pid=pid, user=user, commit=commit, n=len(idx.sections), d=len(idx.files)),
-                      thread_id=thread)
+        prop.update(approved_by=user, retro_counts=(rn, rm))
+        prop['impact_en'] = "\n".join(fmt_impact(impact(Path(prop['dir']), 'main', prop['branch'], 'en'), 'en', (rn, rm)))
+        trailers = (f"Approved-by: {user} in Switch room kb-ops\nRequested-by: {prop['requested_by']}\n"
+                    f"Impact: {prop['impact']['risk']}\nRetro-corrections: {rn} answers in {rm} threads\nProposal: {pid}")
+        source.root = KB_REPO
+        result = await asyncio.to_thread(source.publish, prop, f"Merge {pid}: {prop['title']}", trailers)
+        if result['kind'] == 'pr':
+            prop.update(status='pr_open', pr_url=result['url'], pr_number=result['number'])
+            save(PROPS, props)
+            await log_decision(dict(when=now, id=pid, title=prop['title'], decision='PR opened', kind='pr_opened', by=user, url=result['url']))
+            await agent.reply(t['pr_opened'].format(pid=pid, user=user, n=result['number'], url=result['url']), thread_id=thread)
+            return
+        await after_publish(pid, prop, result['commit'], user)
+
+
+async def after_publish(pid, prop, commit, approved_by):
+    user, thread = approved_by, prop.get('thread')
+    t = T[prop.get('lang', 'en')]
+    now = dt.datetime.now().isoformat(timespec='minutes')
+    retro = ledger.affected(prop['impact']['files'])
+    git(KB_REPO, 'worktree', 'remove', '--force', prop['dir'], check=False)
+    git(KB_REPO, 'branch', '-D', prop['branch'], check=False)
+    idx = kb_core.KBIndex(KB_REPO)
+    idx.refresh()
+    prop.update(status='merged', commit=commit, approved_by=user)
+    props = load(PROPS, {})
+    props[pid] = prop
+    save(PROPS, props)
+    if prop.get('via') == 'github':
+        body = t['pr_merged'].format(pid=pid, n=prop['pr_number'], login=prop['merged_by'], sha7=commit[:7], sections=len(idx.sections), docs=len(idx.files))
+    else:
+        body = t['merged'].format(pid=pid, user=user, commit=commit[:7], n=len(idx.sections), d=len(idx.files))
+    await agent.reply(body, thread_id=thread)
     sent, corrected = [], []
     for entry in retro:
         try:
@@ -607,9 +629,9 @@ async def decide(p: dict, verb: str, pid: str, reason: str, thread: str | None) 
         await agent.reply(t["retro_done"].format(n=n, m=m), thread_id=prop.get("thread") or thread)
     await log_decision({"when": now, "id": pid,
                         "title": prop["title"] + f"; Retro-corrected: {n} answers in {m} threads",
-                        "decision": "approved + merged", "by": user, "commit": commit})
+                        "decision": "approved + merged", "kind": "merged", "via": prop.get("via", "local"), "by": user, "commit": commit})
     push = os.environ.get("KB_PUSH_REMOTE")
-    if push:
+    if push and source.name == "local":
         git(KB_REPO, "push", "-q", push, "main", check=False)
     if prop.get("question"):
         if prop.get("kind") == "gap":
@@ -778,9 +800,8 @@ async def handle_review(row, choice, user, via="switch-card", new_owner=None):
             trailers = f"Reviewed-by: {user} via {via} in Switch room kb-ops\nDecision: still-valid\nPrevious-review: {kb_core.parse_front_matter(raw)[0].get('last_reviewed', '?')}"
             status = "valid"
         path.write_text(changed)
-        git(KB_REPO, "-c", "user.name=kb-curator", "-c", "user.email=kb-curator@example.invalid",
-            "commit", "--allow-empty", "-q", "--only", "--author=kb-curator <kb-curator@example.invalid>",
-            "-m", message, "-m", trailers, "--", row["path"])
+        source.root = KB_REPO
+        await asyncio.to_thread(source.push_main, message + "\n\n" + trailers)
         commit = git(KB_REPO, "rev-parse", "--short", "HEAD")
         row.update(status=status, by=user, when=dt.datetime.now().isoformat())
         persist_review(row)
@@ -974,11 +995,45 @@ async def on_message(data: dict, p: dict) -> None:
     await propose(thread, verdict.get("instruction") or body, q, sender_handle(p), lang, scope)
 
 
+async def poll_source():
+    while True:
+        try:
+            async with lock:
+                events = await asyncio.to_thread(source.poll)
+                known = set()
+                for e in events:
+                    if e['type'] == 'upstream':
+                        kb_core.KBIndex(KB_REPO).refresh()
+                        changed = [f for f in e['files'] if f not in known and f.endswith('.md')]
+                        if changed:
+                            await agent.reply(T['en']['upstream'].format(k=len(changed), old7=e['old'][:7], new7=e['new'][:7]))
+                        continue
+                    props = load(PROPS, {})
+                    prop = props[e['pid']]
+                    if e['type'] == 'pr_merged':
+                        # poll fetched and fast-forwarded main before returning events.
+                        git(KB_REPO, 'merge-base', '--is-ancestor', e['sha'], 'main')
+                        known.update(prop['files'])
+                        prop.update(via='github', merged_by=e['merged_by'])
+                        await after_publish(e['pid'], prop, e['sha'], prop['approved_by'])
+                    else:
+                        prop['status'] = 'rejected'
+                        save(PROPS, props)
+                        git(KB_REPO, 'worktree', 'remove', '--force', prop['dir'], check=False)
+                        git(KB_REPO, 'branch', '-D', prop['branch'], check=False)
+                        await agent.reply(T[prop.get('lang', 'en')]['pr_closed'].format(pid=e['pid'], n=e['number']), thread_id=prop.get('thread'))
+        except Exception:
+            log.exception('Source polling failed')
+        await asyncio.sleep(float(os.environ.get('GITHUB_POLL_S', '20')))
+
+
 async def main() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     git(KB_REPO, "worktree", "prune", check=False)
     await agent.ensure_registered(os.environ["AGENT_REGISTRATION_TOKEN"])
     tasks = [asyncio.create_task(review_sweeps()), asyncio.create_task(review_outcomes())]
+    if source.name == "github":
+        tasks.append(asyncio.create_task(poll_source()))
     try:
         await agent.run([room_id()], on_message)
     finally:

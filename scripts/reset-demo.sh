@@ -14,11 +14,21 @@ docker compose run --rm --no-deps "${LANG_ARG[@]}" kb-curator sh -c '
     cd /data/kb && git worktree prune
     for w in /data/state/worktrees/*; do [ -d "$w" ] && git worktree remove --force "$w" || true; done
   fi
-  rm -rf /data/state/worktrees && find /data/kb -mindepth 1 -delete 2>/dev/null || true
+  rm -rf /data/state/worktrees
+  if [ "${KB_SOURCE:-local}" != github ]; then
+    find /data/kb -mindepth 1 -delete 2>/dev/null || true
+  fi
   cd /app/agents && python - <<PY
 import json, pathlib
 import bootstrap
 bootstrap.seed_kb()
+from docsource import make_source
+from kb_core import git
+source = make_source()
+if source.name == "github":
+    source.authgit("fetch", "origin", source.base)
+    git(source.root, "reset", "--hard", "origin/" + source.base)
+    git(source.root, "clean", "-fd")
 s = pathlib.Path("/data/state")
 for p in s.glob("review_queue.jsonl*"):
     p.unlink(missing_ok=True)
