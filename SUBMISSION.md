@@ -34,7 +34,7 @@ correction the update, while keeping humans as the authority.
 - Typing indicators while the model works; gateway addressing policy so every room member can call the agents.
 - Channel: Switch standalone stack with bundled Mattermost; the same agents work unchanged in Slack/Teams/Discord/Telegram via Switch bridges.
 
-**Tech stack:** Switch 0.31.0 (core, gateway, Mattermost bridge), Python 3.12 (httpx, websockets), git worktrees, BM25 retrieval, OpenAI-compatible LLM (Zhipu GLM-4.6), Docker Compose.
+**Tech stack:** Switch 0.31.0 (core, gateway, Mattermost bridge), Python 3.12 (httpx, websockets), git worktrees, BM25 retrieval, OpenAI-compatible LLM (DeepSeek deepseek-flash), Docker Compose.
 
 **What's next:** push merged changes as PRs to a real docs repo (GitHub/Confluence), scheduled stale-doc sweeps that ask owners to re-confirm, Slack/Teams rollout.
 
