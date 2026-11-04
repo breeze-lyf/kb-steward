@@ -25,7 +25,7 @@ import kb_core
 import ledger
 import llm
 import review
-from common import (KB_REPO, STATE, SWITCH_URL, approvers, is_agent, room_id,
+from common import (KB_REPO, STATE, SWITCH_URL, approvers, default_owner, is_agent, room_id,
                     sender_handle, strip_mentions)
 from kb_core import git
 from switch_proto import SwitchAgent, parse_answered_by
@@ -159,7 +159,7 @@ async def log_gap(question: str, asked_by: str, lang: str, thread: str | None) -
     g = load(GAPS, {"doc_id": None, "rows": []})
     if not open_gap_for_thread(g, thread):
         g["rows"].append({"when": dt.datetime.now().isoformat(timespec="minutes"), "question": question,
-                          "asked_by": asked_by, "lang": lang, "status": "open", "thread": thread,
+                          "asked_by": asked_by, "lang": lang, "status": "open", "thread": thread, "owner": default_owner(),
                           "id": f"G-{max([int(r.get('id', 'G-0').split('-')[-1]) for r in g['rows']] or [0]) + 1}"})
     await _sync_gaps(g)
     return sum(r["status"] == "open" for r in g["rows"])
@@ -871,6 +871,21 @@ async def review_sweeps():
         await asyncio.sleep(hours * 3600)
 
 
+async def review_question(path: str, change: str, fallback: str) -> str:
+    """Turn an owner's review update into the concrete question an employee would ask (used for the preview)."""
+    meta = kb_core.KBIndex(KB_REPO).files.get(path, {})
+    lang = "zh" if path.startswith("zh/") else "en"
+    try:
+        q = (await llm.chat([{"role": "system", "content": "Write the single short question an employee would ask "
+            "whose answer is exactly this documentation change. Reply with the question only, in "
+            + ("Simplified Chinese" if lang == "zh" else "English") + "."},
+            {"role": "user", "content": f"Document: {meta.get('title', path)} ({path})\nChange: {change}"}], max_tokens=80)).get("content") or ""
+    except Exception:
+        log.exception("review question failed")
+        q = ""
+    return review.clean_question(q) or fallback
+
+
 async def on_message(data: dict, p: dict) -> None:
     body = p.get("body") or ""
     if (p.get("sender_name") or "").lower() in ("kb-curator", "kb curator"):
@@ -952,6 +967,8 @@ async def on_message(data: dict, p: dict) -> None:
         return
     q = verdict.get("question") or pending.get(thread, {}).get("question", "")
     review_context = pending.pop(thread, {})
+    if review_context.get("kind") == "review":
+        q = await review_question(review_context["path"], verdict.get("instruction") or strip_mentions(body), q)
     lang = kb_core.lang_of(strip_mentions(body))
     scope = ("zh" if review_context["path"].startswith("zh/") else "en") if review_context.get("kind") == "review" else kb_core.lang_of(q) if q else lang
     await propose(thread, verdict.get("instruction") or body, q, sender_handle(p), lang, scope)

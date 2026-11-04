@@ -140,3 +140,22 @@ class Review(unittest.TestCase):
                     with review.state() as st:
                         self.assertEqual([r['status'] for r in st['rows']], ['valid', 'reassigned'])
         asyncio.run(run())
+
+
+class SmallFixTests(unittest.TestCase):
+    def test_clean_question(self):
+        import review
+        self.assertEqual(review.clean_question('"How do I book a hotel?"\nextra'), "How do I book a hotel?")
+        self.assertEqual(review.clean_question("酒店怎么订？"), "酒店怎么订？")
+        self.assertEqual(review.clean_question("Sure, here you go"), "")
+
+    def test_default_owner(self):
+        import os, common
+        owners = {"finance": {"a"}, "support": {"b"}}
+        os.environ.pop("KB_DEFAULT_OWNER", None)
+        self.assertEqual(common.default_owner(owners), "finance")
+        os.environ["KB_DEFAULT_OWNER"] = "support"
+        self.assertEqual(common.default_owner(owners), "support")
+        os.environ["KB_DEFAULT_OWNER"] = "nope"
+        self.assertEqual(common.default_owner(owners), "finance")
+        os.environ.pop("KB_DEFAULT_OWNER")

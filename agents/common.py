@@ -44,3 +44,10 @@ def is_agent(payload: dict) -> bool:
     s = (payload.get("sender") or "").lower()
     n = sender_handle(payload)
     return "switch-agent" in s or n in AGENT_NAMES or "kb answerer" in n or "kb curator" in n or "switch-admin" in s or "switch-bridge" in s
+
+
+def default_owner(owners=None) -> str:
+    """Owner for items nobody claimed yet (e.g. knowledge gaps): KB_DEFAULT_OWNER, else the first APPROVERS key."""
+    owners = approvers() if owners is None else owners
+    o = os.environ.get("KB_DEFAULT_OWNER", "").strip()
+    return o if o in owners else next(iter(owners), "")

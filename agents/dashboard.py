@@ -147,7 +147,7 @@ class Dashboard:
 
     def _summary(self):
         answers = rows(read(self.state / 'answers.json', []))
-        gaps = [g for g in rows(read(self.state / 'gaps.json', {})) if g.get('status', 'open') == 'open']
+        gaps = [dict(g, owner=g.get('owner') or common.default_owner()) for g in rows(read(self.state / 'gaps.json', {})) if g.get('status', 'open') == 'open']
         reviews = rows(read(self.state / 'reviews.json', {}))
         decisions = sorted(rows(read(self.state / 'decisions.json', {})), key=lambda r: r.get('when', ''), reverse=True)
         props = read(self.state / 'proposals.json', {})

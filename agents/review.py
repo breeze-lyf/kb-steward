@@ -91,3 +91,9 @@ def drain():
                 continue
         processing.unlink(missing_ok=True)
         return rows
+
+
+def clean_question(text):
+    """First line of an LLM reply, unquoted; empty unless it reads like a question."""
+    q = (text or "").strip().splitlines()[0].strip().strip('"\'“”`') if (text or "").strip() else ""
+    return q if q.endswith(("?", "？")) and len(q) < 200 else ""
