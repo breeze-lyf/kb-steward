@@ -332,7 +332,7 @@ A person in the team chat stated a correction or resolved a conflict. Your job:
 CREATE_TOOL = {"type": "function", "function": {"name": "create_file", "description": "Create a new Markdown owner document with title, owner and last_reviewed front matter.",
     "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}}
 GAP_SYS = """You maintain a company knowledge base. Learn ONLY the facts stated in the supplied human answer; do not invent details.
-Search for the most relevant existing document of the selected owner. Prefer adding a new ## section if one clearly fits; otherwise create a NEW document.
+Search the existing documents of the selected owner. Add a new ## section ONLY if an existing document's title/scope clearly covers this topic (e.g. parking on a business trip fits a travel & expense policy; a fitness or phone benefit does NOT fit a travel policy). Otherwise create a NEW document with create_file.
 Write documents in the question language: {language}. English paths: <owner>/<slug>.md; Chinese paths: zh/<owner>/<slug>.md.
 New documents MUST start with front matter containing non-empty title, owner: <owner>, last_reviewed: {today}, and lang: zh for Chinese.
 Keep existing owners unchanged. Only edit documents of the selected owner. Set last_reviewed to {today}. Call done when finished."""
