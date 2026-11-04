@@ -34,6 +34,11 @@ def _profile(model: str = "always_on") -> dict:
     }
 
 
+def parse_answered_by(s: str) -> str:
+    import re
+    return re.sub(r"^switch-mattermost-.{36}-", "", s.lstrip("@").split(":", 1)[0]).lower()
+
+
 class SwitchAgent:
     """One registered Switch agent with a persistent identity on disk."""
 
@@ -49,6 +54,7 @@ class SwitchAgent:
         self.cursor: int | None = None
         self.generation: int | None = None
         self.rooms: list[str] = []
+        self._started_sessions: set[str] = set()
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         self._state_file = STATE_DIR / f"{name}.json"
 
@@ -118,6 +124,36 @@ class SwitchAgent:
 
     async def reply(self, body: str, thread_id: str | None = None) -> Any:
         return await self.op("post_message", body=body, thread_id=thread_id)
+
+    async def open_card(self, session_id, request_id, title, detail, question_id, prompt, options, room_id, thread_id):
+        uuid.UUID(session_id)
+        if session_id not in self._started_sessions:
+            self._started_sessions.add(session_id)
+            try:
+                await self.http.post(f"{self.base}/agent-sessions/{session_id}/started", headers=self._h(), json={"start_source": "automation"})
+            except Exception:
+                pass
+        r = await self.http.post(f"{self.base}/agent-sessions/{session_id}/approvals", headers=self._h(), json={
+            "request_id": request_id, "turn_id": "review", "kind": "questions", "title": title, "detail": detail,
+            "options": [], "questions": [{"id": question_id, "title": "Review", "prompt": prompt,
+            "multi_select": False, "allow_custom_answer": False,
+            "options": [{"id": i, "label": label, "description": None} for i, label in options]}],
+            "room_id": room_id, "thread_id": thread_id, "expires_at": None})
+        r.raise_for_status()
+
+    async def card_outcomes(self):
+        r = await self.http.get(f"{self.base}/agent-sessions/approvals/outcomes", headers=self._h())
+        r.raise_for_status()
+        j = r.json()
+        return j if isinstance(j, list) else j.get("outcomes") or j.get("items") or []
+
+    async def card_delivered(self, session_id, request_id):
+        r = await self.http.post(f"{self.base}/agent-sessions/{session_id}/approvals/{request_id}/delivered", headers=self._h())
+        r.raise_for_status()
+
+    async def card_close(self, session_id, request_id):
+        r = await self.http.post(f"{self.base}/agent-sessions/{session_id}/approvals/{request_id}/close", headers=self._h())
+        r.raise_for_status()
 
     # ---------- event loop ----------
     async def run(self, rooms: list[str], on_message: Callable[[dict, dict], Awaitable[None]]) -> None:

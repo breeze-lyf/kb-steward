@@ -20,7 +20,9 @@ import json, pathlib
 import bootstrap
 bootstrap.seed_kb()
 s = pathlib.Path("/data/state")
-for name in ("proposals.json", "answers.json", "answers.json.lock"):
+for p in s.glob("review_queue.jsonl*"):
+    p.unlink(missing_ok=True)
+for name in ("proposals.json", "answers.json", "answers.json.lock", "reviews.json", "reviews.json.lock"):
     (s / name).unlink(missing_ok=True)
 for name in ("decisions.json", "gaps.json"):
     d = s / name

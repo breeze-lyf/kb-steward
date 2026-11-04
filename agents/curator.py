@@ -24,10 +24,11 @@ from pathlib import Path
 import kb_core
 import ledger
 import llm
+import review
 from common import (KB_REPO, STATE, SWITCH_URL, approvers, is_agent, room_id,
                     sender_handle, strip_mentions)
 from kb_core import git
-from switch_proto import SwitchAgent
+from switch_proto import SwitchAgent, parse_answered_by
 
 log = logging.getLogger("kb-curator")
 agent = SwitchAgent("kb-curator", "KB Curator",
@@ -98,6 +99,8 @@ T = {
         "risk_new": "新增制度内容（{vals}），未改动已有数值", "risk_multi": "；{n} 篇文档需保持一致",
     },
 }
+T['en'].update({'review_due': '🧹 Review due: `{path}` ({title}) · owner **{owner}** · last reviewed {last_reviewed} ({age} days). {tags} please confirm with one click below, or reply `still valid` / `needs update` / `not mine` in this thread.', 'review_denied': "⛔ @{user} isn't an owner of `{path}` ({owner}: {allowed}). Card re-issued.", 'review_valid': '✅ {id}: `{path}` still valid · `{commit}`.', 'review_update': "@{user} thanks — reply in this thread with what changed and I'll draft a proposal for approval (or say `don't know` and I'll log it as a knowledge gap).", 'review_reassign': 'Who should own `{path}`?', 'review_reassigned': '✅ {id}: `{path}` reassigned · `{commit}`.', 'review_prompt': 'Is this document still accurate?', 'review_options': ['Still valid', 'Needs update', 'Not mine']})
+T['zh'].update({'review_due': '🧹 复核提醒：`{path}`（{title}）· 负责人 **{owner}** · 上次复核 {last_reviewed}（{age} 天）。{tags} 请点击下方按钮，或在本帖回复 `仍然有效` / `需要更新` / `不归我`。', 'review_denied': '⛔ @{user} 不是 `{path}` 的负责人（{owner}：{allowed}）。已重新发卡。', 'review_valid': '✅ {id}：`{path}` 仍然有效 · `{commit}`。', 'review_update': '@{user} 谢谢，请在本帖说明变化，我会起草提案请负责人审批；也可回复“不知道”，我会记录知识缺口。', 'review_reassign': '`{path}` 应由谁负责？', 'review_reassigned': '✅ {id}：`{path}` 已转交 · `{commit}`。', 'review_prompt': '文档是否仍然准确？', 'review_options': ['仍然有效', '需要更新', '不归我']})
 VERB_ZH = {"approve": "批准", "reject": "驳回"}
 lock = asyncio.Lock()
 pending: dict[str, dict] = {}  # thread_id -> context of an open question to an owner
@@ -645,6 +648,229 @@ async def classify(body: str, context: str) -> dict:
         {"role": "user", "content": f"Thread so far:\n{context}\n\nLAST message: {body}"}], max_tokens=400)
 
 
+# ---------------------------------------------------------------- periodic reviews
+async def issue_card(row):
+    with review.state(True) as st:
+        live = next(r for r in st["rows"] if r["id"] == row["id"])
+        live["issue"] = live.get("issue", 0) + 1
+        live["request_id"] = f"{live['id']}-{live['issue']}"
+        live["card_pending"] = True
+        row.update(live)
+        session = st["session_id"]
+    t = T[row.get("lang", "en")]
+    options = ([(o, f"{o} ({' '.join('@' + u for u in sorted(users))})")
+                for o, users in approvers().items() if o != row["owner"]] if row["stage"] == "reassign" else
+               list(zip(("valid", "update", "notmine"), t["review_options"])))
+    await agent.open_card(session, row["request_id"], f"{row['id']} · {row['path']}", row["path"], "review",
+                          t["review_reassign"].format(**row) if row["stage"] == "reassign" else t["review_prompt"],
+                          options, room_id(), row["thread"])
+    row["card_pending"] = False
+    persist_review(row)
+
+
+def persist_review(row):
+    with review.state(True) as st:
+        next(r for r in st["rows"] if r["id"] == row["id"]).update(row)
+
+
+async def sweep(only=None):
+    async with lock:
+        idx = kb_core.KBIndex(KB_REPO)
+        docs = review.due_docs(idx)
+        if only:
+            meta = idx.files.get(only)
+            docs = [dict(path=only, title=meta.get("title", only), owner=meta.get("owner", "?"),
+                         last_reviewed=meta.get("last_reviewed", "?"), age=idx.staleness(only),
+                         lang=kb_core.doc_lang(meta, only))] if meta else []
+        with review.state() as st:
+            docs = review.select_due(docs, st["rows"], int(os.environ.get("REVIEW_MAX_CARDS", "5")))
+        for doc in docs:
+            try:
+                with review.state(True) as st:
+                    rid = f"R-{max([int(r['id'][2:]) for r in st['rows']] or [0]) + 1}"
+                    row = dict(doc, id=rid, thread=None, request_id=None, status="open", stage="review",
+                               when=dt.datetime.now().isoformat(), by=None)
+                    st["rows"].append(row)
+                tags = " ".join('@' + u for u in sorted(approvers().get(row["owner"], ())))
+                res = await agent.reply(T[row["lang"]]["review_due"].format(**row, tags=tags))
+                row["thread"] = res["event_id"]
+                persist_review(row)
+                await issue_card(row)
+            except Exception:
+                row["status"] = "superseded"
+                persist_review(row)
+                log.exception("review issue failed")
+
+
+async def handle_review(row, choice, user, via="switch-card", new_owner=None):
+    resweep = None
+    expected_request = row.get("request_id")
+    async with lock:
+        with review.state() as st:
+            row = next((dict(r) for r in st["rows"] if r["id"] == row["id"]), None)
+            session = st["session_id"]
+        if not row or row["status"] != "open" or (expected_request and row.get("request_id") != expected_request):
+            return
+        user = user.lower()
+        t = T[row.get("lang", "en")]
+        async def close():
+            if row.get("request_id"):
+                try:
+                    await agent.card_close(session, row["request_id"])
+                except Exception:
+                    log.exception("review close failed")
+        if not review.owner_allowed(row, user, approvers()):
+            await agent.reply(t["review_denied"].format(**row, user=user,
+                allowed=", ".join('@' + u for u in sorted(approvers().get(row["owner"], ())))), row["thread"])
+            await close()
+            await issue_card(row)
+            return
+        path = (KB_REPO / row["path"]).resolve()
+        if not path.is_relative_to(KB_REPO.resolve()) or not path.is_file():
+            return
+        if kb_core.parse_front_matter(path.read_text())[0].get("owner") != row["owner"]:
+            row["status"] = "superseded"
+            persist_review(row)
+            return
+        if row["stage"] == "reassign":
+            target = new_owner or choice
+            if target not in approvers() or target == row["owner"]:
+                return
+        elif choice not in ("valid", "update", "notmine"):
+            return
+        if choice == "notmine" and row["stage"] == "review":
+            await close()
+            row.update(stage="reassign")
+            persist_review(row)
+            if new_owner in approvers() and new_owner != row["owner"]:
+                # Dashboard supplies the second-stage selection in the same request.
+                target = new_owner
+            else:
+                await agent.reply(t["review_reassign"].format(**row), row["thread"])
+                await issue_card(row)
+                return
+        if choice == "update" and row["stage"] == "review":
+            row.update(status="update", by=user)
+            persist_review(row)
+            pending[row["thread"]] = {"question": f"Is {row['path']} still accurate?", "kind": "review", "path": row["path"]}
+            await close()
+            await agent.reply(t["review_update"].format(user=user), row["thread"])
+            return
+        path = (KB_REPO / row["path"]).resolve()
+        if not path.is_relative_to(KB_REPO.resolve()) or path.suffix != ".md":
+            raise ValueError("review outside KB")
+        if git(KB_REPO, "branch", "--show-current") != "main" or git(KB_REPO, "status", "--porcelain"):
+            raise RuntimeError("review requires clean KB main")
+        raw = path.read_text()
+        if kb_core.parse_front_matter(raw)[0].get("owner") != row["owner"]:
+            row["status"] = "superseded"
+            persist_review(row)
+            await close()
+            return
+        if row["stage"] == "reassign":
+            changed = review.set_owner(raw, target)
+            message = f"Review {row['id']}: {row['path']} reassigned"
+            trailers = f"Reassigned-by: {user} via {via}\nOwner-change: {row['owner']} -> {target}"
+            status, resweep = "reassigned", row["path"]
+        else:
+            changed = review.bump_last_reviewed(raw, dt.date.today().isoformat())
+            message = f"Review {row['id']}: {row['path']} still valid"
+            trailers = f"Reviewed-by: {user} via {via} in Switch room kb-ops\nDecision: still-valid\nPrevious-review: {kb_core.parse_front_matter(raw)[0].get('last_reviewed', '?')}"
+            status = "valid"
+        path.write_text(changed)
+        git(KB_REPO, "-c", "user.name=kb-curator", "-c", "user.email=kb-curator@example.invalid",
+            "commit", "--allow-empty", "-q", "--only", "--author=kb-curator <kb-curator@example.invalid>",
+            "-m", message, "-m", trailers, "--", row["path"])
+        commit = git(KB_REPO, "rev-parse", "--short", "HEAD")
+        row.update(status=status, by=user, when=dt.datetime.now().isoformat())
+        persist_review(row)
+        await close()
+        await log_decision(dict(when=row["when"], id=row["id"], title=message, decision=status, by=user, commit=commit))
+        await agent.reply(t["review_valid" if status == "valid" else "review_reassigned"].format(**row, commit=commit), row["thread"])
+    if resweep:
+        await sweep(resweep)
+
+
+async def queued_review(item):
+    if not item.get("review_id") and item.get("path"):
+        await sweep(item["path"])
+        with review.state() as current:
+            live = next((r for r in reversed(current["rows"])
+                         if r["path"] == item["path"] and r["status"] == "open"), None)
+        if not live:
+            return
+        item["review_id"] = live["id"]
+    await handle_review({"id": item["review_id"]}, item["choice"], item["user"], item["via"], item.get("new_owner"))
+
+
+async def review_outcomes():
+    while True:
+        try:
+            # Recover review follow-up context after process restarts.
+            with review.state() as st:
+                for r in st["rows"]:
+                    if r["status"] == "update":
+                        pending.setdefault(r["thread"], {"kind": "review", "path": r["path"], "question": f"Is {r['path']} still accurate?"})
+            for r in st["rows"]:
+                if r["status"] == "open" and r.get("card_pending") and r.get("thread"):
+                    async with lock:
+                        await issue_card(dict(r))
+            for outcome in await agent.card_outcomes():
+                try:
+                    sid, req = outcome.get("sessionId"), outcome.get("requestId")
+                    with review.state() as st:
+                        row = next((dict(r) for r in st["rows"] if r.get("request_id") == req and st["session_id"] == sid), None)
+                    if not row:
+                        await agent.card_delivered(sid, req)
+                        continue
+                    if outcome.get("state") == "answered":
+                        answers = outcome.get("answers") or []
+                        choices = next((a.get("selected_option_ids", []) for a in answers if a.get("question_id") == "review"), [])
+                        if choices:
+                            await handle_review(row, choices[0], parse_answered_by(outcome.get("answeredBy", "")), via="switch-card")
+                    elif row["status"] == "open":
+                        expired = False
+                        async with lock:
+                            with review.state(True) as current:
+                                live = next(r for r in current["rows"] if r["id"] == row["id"])
+                                if live["status"] == "open" and live.get("request_id") == req:
+                                    live["status"], expired = "superseded", True
+                        if expired:
+                            await sweep(row["path"])
+                    await agent.card_delivered(sid, req)
+                except Exception:
+                    log.exception("review outcome failed")
+        except Exception:
+            log.exception("review polling failed")
+        try:
+            for item in review.drain():
+                try:
+                    await queued_review(item)
+                except Exception:
+                    log.exception("review queue item failed")
+        except Exception:
+            log.exception("review queue failed")
+        await asyncio.sleep(3)
+
+
+async def review_sweeps():
+    try:
+        hours = float(os.environ.get("REVIEW_SWEEP_HOURS", "24"))
+        delay = float(os.environ.get("REVIEW_SWEEP_DELAY_S", str(hours * 3600)))
+    except ValueError:
+        log.exception("invalid review schedule")
+        return
+    if hours <= 0:
+        return
+    await asyncio.sleep(max(0, delay))
+    while True:
+        try:
+            await sweep()
+        except Exception:
+            log.exception("review sweep failed")
+        await asyncio.sleep(hours * 3600)
+
+
 async def on_message(data: dict, p: dict) -> None:
     body = p.get("body") or ""
     if (p.get("sender_name") or "").lower() in ("kb-curator", "kb curator"):
@@ -683,6 +909,21 @@ async def on_message(data: dict, p: dict) -> None:
     if p.get("addressed") and STALE_CMD.search(body):
         idx = kb_core.KBIndex(KB_REPO)
         await agent.reply(kb_core.stale_report(idx, approvers(), kb_core.lang_of(strip_mentions(body))), thread_id=thread)
+        await sweep()
+        return
+
+    command = re.search(r"\breview\s+(R-\d+)\s+(valid|update|notmine)\b", body, re.I)
+    with review.state() as st:
+        row = next((dict(r) for r in st["rows"] if r["status"] == "open" and
+                    (r["id"] == command[1].upper() if command else r["thread"] == thread)), None)
+    choice = command[2].lower() if command else review.typed_intent(strip_mentions(body), row["stage"], approvers()) if row else None
+    if row and choice:
+        await handle_review(row, choice, sender_handle(p), via="chat")
+        return
+    ctx = pending.get(thread, {})
+    if ctx.get("kind") == "review" and re.search(r"don[’\']?t know|do not know|不知道|不清楚", body, re.I):
+        await log_gap(ctx["question"], sender_handle(p), kb_core.lang_of(body), thread)
+        pending.pop(thread, None)
         return
 
     gap = open_gap_for_thread(load(GAPS, {"rows": []}), thread)
@@ -701,6 +942,8 @@ async def on_message(data: dict, p: dict) -> None:
     if not (p.get("addressed") or HINT.search(body) or ZH_HINT.search(body) or thread in pending):
         return
     context = await thread_text(thread)
+    if pending.get(thread, {}).get("kind") == "review":
+        context += "\nReview document: " + pending[thread]["path"]
     verdict = await classify(strip_mentions(body), context)
     log.info("classify: %s", verdict)
     if not verdict.get("is_correction"):
@@ -708,9 +951,9 @@ async def on_message(data: dict, p: dict) -> None:
             await agent.reply(T[kb_core.lang_of(strip_mentions(body))]["help"], thread_id=thread)
         return
     q = verdict.get("question") or pending.get(thread, {}).get("question", "")
-    pending.pop(thread, None)
+    review_context = pending.pop(thread, {})
     lang = kb_core.lang_of(strip_mentions(body))
-    scope = kb_core.lang_of(q) if q else lang  # which language's KB the question was answered from
+    scope = ("zh" if review_context["path"].startswith("zh/") else "en") if review_context.get("kind") == "review" else kb_core.lang_of(q) if q else lang
     await propose(thread, verdict.get("instruction") or body, q, sender_handle(p), lang, scope)
 
 
@@ -718,7 +961,13 @@ async def main() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     git(KB_REPO, "worktree", "prune", check=False)
     await agent.ensure_registered(os.environ["AGENT_REGISTRATION_TOKEN"])
-    await agent.run([room_id()], on_message)
+    tasks = [asyncio.create_task(review_sweeps()), asyncio.create_task(review_outcomes())]
+    try:
+        await agent.run([room_id()], on_message)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 if __name__ == "__main__":

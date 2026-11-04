@@ -14,12 +14,12 @@ FILE = None  # Tests may override this; otherwise resolve STATE at call time.
 
 
 @contextmanager
-def _state(write=False):
-    path = Path(FILE) if FILE is not None else common.STATE / "answers.json"
+def locked_state(path, default, write=False):
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with Path(str(path) + ".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX if write else fcntl.LOCK_SH)
-        rows = json.loads(path.read_text()) if path.exists() else []
+        rows = json.loads(path.read_text()) if path.exists() else default
         yield rows
         if write:
             name = None
@@ -33,6 +33,10 @@ def _state(write=False):
             finally:
                 if name and os.path.exists(name):
                     os.unlink(name)
+
+
+def _state(write=False):
+    return locked_state(Path(FILE) if FILE is not None else common.STATE / "answers.json", [], write)
 
 
 def _intro(cite):

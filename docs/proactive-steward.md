@@ -73,3 +73,66 @@ the proposal thread, and counted in the decision-log title. The merge message
 includes `Retro-corrections: N answers in M threads` alongside the existing
 approval, requester, and impact trailers. Resetting the demo deletes both the
 ledger and its lock file.
+
+## Review sweep and one-click confirm
+
+`@kb-curator stale report` retains the report and also opens review threads.
+Automatic sweeps run every `REVIEW_SWEEP_HOURS` (24 by default; 0 disables),
+starting after `REVIEW_SWEEP_DELAY_S` (default: one full interval, so a freshly reset room stays clean). Each sweep opens at most
+`REVIEW_MAX_CARDS` (5), most overdue first, skipping active reviews. Document
+language controls card and message language; English is the default.
+
+The Switch client starts a UUID session once with
+`POST /agent-sessions/{session_id}/started` and `start_source: automation`
+(start errors are ignored), then creates a questions approval at
+`POST /agent-sessions/{session_id}/approvals`, using Bearer API-key auth.
+The root reply's `event_id` is the card's `thread_id`. The request uses
+`turn_id: review`, empty top-level options, a single non-custom, single-select
+question, and null expiry. Mattermost renders option-order action IDs
+`switch1`, `switch2`, `switch3`, with typed fallback `A<n> <option#>`.
+
+Every three seconds curator polls `GET /agent-sessions/approvals/outcomes`
+and acknowledges outcomes through the approval's `/delivered` endpoint.
+`answeredBy` looks like
+`@switch-mattermost-<36-character UUID>-username:localhost`; the client strips
+that wrapper and lowercases the username. Anyone allowed to address the agent
+may press a button, so curator independently checks the current owner's
+`APPROVERS` membership on every decision. Unauthorized presses change no KB
+content and receive a fresh card. Chat decisions close the outstanding card
+through `/close`; old request IDs cannot resolve a reissued review.
+Expired reviews become superseded and are eligible for another issue.
+
+Owners may choose Still valid, Needs update, or Not mine, or use their English
+or Chinese thread equivalents. Global `review R-3 valid|update|notmine` works
+as well. Not mine opens a second card listing other owner keys; only the
+current owner's approvers can select the new owner. Reassignment changes only
+front matter and immediately issues a review to the new owner's approvers.
+Needs update routes the subsequent thread reply through the existing correction
+classifier and proposal approval flow with the document path in context;
+`don't know` / `不知道` records a knowledge gap.
+
+`reviews.json` under `KBS_STATE_DIR` stores a persisted session UUID and review
+rows (ID, path, owner, previous review date/age, thread, request ID, status,
+stage, timestamp and decision user). Locked atomic replacement uses the same
+helper as the answer ledger. `review.enqueue(review_id, choice, user, via,
+new_owner=None)` appends to `review_queue.jsonl` under a file lock; polling
+renames it to `.processing` and drains it. Front ends must authenticate users;
+curator still checks owner membership. Reset clears both state files and queue
+suffix files.
+
+Still-valid commits change only `last_reviewed`, without explicitly rebuilding
+an index, and use `Review R-n: <path> still valid`, with trailers:
+
+```text
+Reviewed-by: <user> via <via> in Switch room kb-ops
+Decision: still-valid
+Previous-review: <date>
+```
+
+Reassignments use `Reassigned-by: <user> via <via>` and
+`Owner-change: <old> -> <new>`. Both are authored by kb-curator and recorded
+with their commit in the decision log. All agent communication uses Switch.
+
+`agents/mm_press.py <persona> <post-id-prefix> <action-id>` presses a card as a
+demo persona, for example `finance-lead abc123 switch1`. Like `mm_say.py`, it
+is a demo-only human-side Mattermost driver and is never called by agents.
