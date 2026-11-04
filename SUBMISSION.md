@@ -8,7 +8,7 @@
 
 **Repository:** https://github.com/breeze-lyf/kb-steward
 
-**Demo video:** https://youtu.be/8xKwF6o_T2U
+**Demo video:** https://youtu.be/HDlKPY9HajU (v2, 2:13 — English loop, Chinese loop, impact analysis, knowledge gaps, review report; v1: https://youtu.be/8xKwF6o_T2U)
 
 **Team:** solo — breeze
 
@@ -42,7 +42,7 @@ correction the update, while keeping humans as the authority.
 - Typing indicators while the model works; gateway addressing policy so every room member can call the agents.
 - Channel: Switch standalone stack with bundled Mattermost; the same agents work unchanged in Slack/Teams/Discord/Telegram via Switch bridges.
 
-**Tech stack:** Switch 0.31.0 (core, gateway, Mattermost bridge), Python 3.12 (httpx, websockets), git worktrees, BM25 retrieval, OpenAI-compatible LLM (video run: DeepSeek; live instance: GPT via an OpenAI-compatible relay), CJK-bigram BM25 for Chinese, Docker Compose.
+**Tech stack:** Switch 0.31.0 (core, gateway, Mattermost bridge), Python 3.12 (httpx, websockets), git worktrees, BM25 retrieval, OpenAI-compatible LLM (v1 video run: DeepSeek; v2 video and live instance: GPT via an OpenAI-compatible relay), CJK-bigram BM25 for Chinese, Docker Compose.
 
 **What's next:** push merged changes as PRs to a real docs repo (GitHub/Confluence/enterprise wiki), owner re-confirmation buttons on the stale sweep, Slack/Teams/DingTalk-style enterprise chat rollout.
 
