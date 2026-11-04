@@ -1,0 +1,39 @@
+# KB Steward agents. Runs next to a Switch standalone stack (see README).
+# Joins the Switch compose network so it reaches `switch` and `mattermost` by name.
+x-agent: &agent
+  build:
+    context: .
+    args:
+      PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+      APT_MIRROR: ${APT_MIRROR:-}
+  image: kb-steward:local
+  env_file: agents.env
+  volumes:
+    - kbdata:/data
+  networks: [switch]
+  restart: unless-stopped
+
+services:
+  bootstrap:
+    <<: *agent
+    command: python bootstrap.py
+    restart: "no"
+  kb-answerer:
+    <<: *agent
+    command: python answerer.py
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+  kb-curator:
+    <<: *agent
+    command: python curator.py
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+
+volumes:
+  kbdata:
+
+networks:
+  switch:
+    external: true
+    name: ${SWITCH_NETWORK:-kbswitch_default}
