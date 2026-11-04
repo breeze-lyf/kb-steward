@@ -29,17 +29,54 @@ The AI does the real work (impact analysis, multi-file edits, verification); peo
 
 📺 Video: _link added after recording_ — shot list in [DEMO.md](DEMO.md).
 
+Real transcript from a run on DeepSeek (`kb-ops` channel, example data, lightly trimmed):
+
 ```
-newhire        @kb-answerer what's the meal allowance when travelling?
-kb-answerer    $50/day … [finance/expense-policy.md · owner finance-lead · reviewed 2024-03-12 ⚠️ stale]
-finance-lead   that's outdated — it's $65/day since July, receipts over $25
-kb-curator     📝 KB-1 · 2 files changed (expense-policy.md, travel-faq.md) · preview answer: "$65/day…"
-               @finance-lead reply `approve KB-1` or `reject KB-1`
-support-lead   approve KB-1
-kb-curator     ⛔ only the owner of finance docs (finance-lead) can approve KB-1
-finance-lead   approve KB-1
-kb-curator     ✅ merged a1b2c3d (Approved-by: finance-lead) · index rebuilt · logged in "KB decision log"
-kb-answerer    (re-check) $65/day, receipts over $25 … [reviewed today]
+newhire       @kb-answerer what's the meal allowance when travelling?
+kb-answerer   The daily meal allowance when travelling for work is $50 per day [1][2], and alcohol is
+              not reimbursable [1]. Keep receipts for anything above $40 [2].
+              [1] finance/expense-policy.md § Meal allowance · owner finance · reviewed 2024-03-12 ⚠️ last reviewed 967 days ago
+              [2] finance/travel-faq.md § Do I get a per diem? · owner finance · reviewed 2025-01-20 ⚠️ last reviewed 653 days ago
+              kb@cfbdc03 · confidence: high
+finance-lead  That's outdated: since July it's $65/day, and receipts are needed for anything over $25.
+kb-curator    On it: drafting KB-1 from @finance-lead's correction. Checking every doc that states this fact…
+kb-curator    📝 KB-1 · Update meal allowance to $65/day and receipt threshold to $25 — kb/KB-1 (2 files changed)
+              Files: finance/expense-policy.md, finance/travel-faq.md · owner: finance
+              (diff) -daily meal allowance is **$50 per day**  +daily meal allowance is **$65 per day** …
+              🔎 Preview — on this branch, kb-answerer would now say: The daily meal allowance … is $65 per day …
+              @finance-lead please review. Reply `approve KB-1` to merge, or `reject KB-1 <reason>`.
+support-lead  approve KB-1
+kb-curator    ⛔ @support-lead can't approve KB-1: it changes finance documents, which only @finance-lead
+              can sign off. Nothing was merged.
+finance-lead  approve KB-1
+kb-curator    ✅ KB-1 approved by @finance-lead and merged as f7f2723. Index rebuilt: 27 sections from 7 docs.
+              Logged to the room's KB decision log.
+kb-curator    @kb-answerer re-check: what's the meal allowance when travelling?
+kb-answerer   The daily meal allowance when travelling for work is $65 per day [1][2]; keep receipts for
+              anything above $25 [2]. … reviewed 2026-11-04 · kb@f7f2723 · confidence: high
+
+newhire       @kb-answerer how long do customers have to request a refund?
+kb-answerer   The sources disagree on the refund window: the refund policy says 30 days [1], while the
+              support macro says 14 days [2]. … confidence: medium
+kb-answerer   @kb-curator hand-off · CONFLICT · Refund request window: 30 days per refund-policy.md vs
+              14 days per support-macros.md · files: … · question: how long do customers have to request a refund?
+kb-curator    🧭 Two documents disagree, so I won't let the answer drift. @support-lead: which value is correct?
+support-lead  30 days is right, the macro is wrong.
+kb-curator    📝 KB-2 · Fix refund window in support macro to 30 days — 1 file changed …
+support-lead  approve KB-2
+kb-curator    ✅ KB-2 approved by @support-lead and merged as 99ba48b. …
+kb-answerer   Customers have 30 days from purchase to request a full refund [1][2]. … confidence: high
+```
+
+Git history after the run:
+
+```
+99ba48b Merge KB-2: Fix refund window in support macro to 30 days
+Approved-by: support-lead in Switch room kb-ops
+Requested-by: support-lead
+f7f2723 Merge KB-1: Update meal allowance to $65/day and receipt threshold to $25
+Approved-by: finance-lead in Switch room kb-ops
+Requested-by: finance-lead
 ```
 
 ## How Switch is used (the core of the project)
@@ -111,6 +148,7 @@ Rehearse without a browser:
 ```bash
 docker compose exec kb-answerer python mm_say.py newhire "@kb-answerer what's the meal allowance when travelling?"
 docker compose exec kb-answerer python mm_say.py --dump 10
+scripts/reset-demo.sh        # back to the seed KB, empty channel (keeps room + agents)
 ```
 
 Inspect what the curator did: `docker compose exec kb-curator git -C /data/kb log --format='%h %s%n%(trailers)'`.

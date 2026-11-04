@@ -49,6 +49,13 @@ def main():
             t = " ↳" if post.get("root_id") else ""
             print(f"---{t} [{names[u]}] {pid[:6]}\n{post['message']}")
         return
+    if a and a[0] == "--wipe":  # demo reset: clear the channel (admin only, example data)
+        c = login(os.environ.get("MATTERMOST_ADMIN_USER")); ch = channel(c)
+        while True:
+            p = c.get(f"/channels/{ch}/posts", params={"per_page": 200}).json()
+            if not p["order"]: break
+            for pid in p["order"]: c.delete(f"/posts/{pid}")
+        print("channel cleared"); return
     user, text = a[0], a[1]
     c = login(user); ch = channel(c)
     body = {"channel_id": ch, "message": text}

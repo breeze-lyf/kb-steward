@@ -144,13 +144,17 @@ async def answer(index: KBIndex, question: str, history: str = "") -> dict:
 def format_answer(index: KBIndex, out: dict) -> str:
     srcs: list[Section] = out.get("sources", [])
     used = [i for i in out.get("used", []) if isinstance(i, int) and 1 <= i <= len(srcs)] or ([1] if srcs else [])
-    lines = [out.get("answer", "").strip()]
+    used = list(dict.fromkeys(used))
+    remap = {old: new for new, old in enumerate(used, 1)}
+    text = re.sub(r"\[(\d+)\]", lambda m: f"[{remap[int(m.group(1))]}]" if int(m.group(1)) in remap else "",
+                  out.get("answer", "")).strip()
+    lines = [text]
     if used:
         lines.append("")
         for i in used:
             s = srcs[i - 1]
             age = index.staleness(s.path)
             flag = f" ⚠️ last reviewed {age} days ago" if age is not None and age > STALE_DAYS else ""
-            lines.append(f"> [{i}] `{s.cite}` · owner **{s.meta.get('owner','?')}** · reviewed {s.meta.get('last_reviewed','?')}{flag}")
+            lines.append(f"> [{remap[i]}] `{s.cite}` · owner **{s.meta.get('owner','?')}** · reviewed {s.meta.get('last_reviewed','?')}{flag}")
     lines.append(f"\n_kb@{index.head} · confidence: {out.get('confidence','?')}_")
     return "\n".join(lines)

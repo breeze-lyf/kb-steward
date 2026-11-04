@@ -226,7 +226,7 @@ async def propose(thread: str | None, instruction: str, question: str, requested
         if question:
             try:
                 out = await kb_core.answer(kb_core.KBIndex(prop["dir"]), question)
-                preview = out.get("answer", "")
+                preview = re.sub(r"\s*\[\d+\]", "", out.get("answer", ""))
             except Exception as e:  # noqa: BLE001
                 log.warning("preview failed: %s", e)
         props[pid] = prop
@@ -242,8 +242,6 @@ async def propose(thread: str | None, instruction: str, question: str, requested
         body += [f"🔎 **Preview** — on this branch, kb-answerer would now say: _{preview}_"]
     body += ["", f"{tag} please review. Reply `approve {pid}` to merge, or `reject {pid} <reason>`."]
     await agent.reply("\n".join(body), thread_id=thread)
-    await log_decision({"when": prop["created"], "id": pid, "title": prop["title"], "decision": "proposed",
-                        "by": f"kb-curator (from {requested_by})"})
 
 
 async def decide(p: dict, verb: str, pid: str, reason: str, thread: str | None) -> None:
@@ -261,8 +259,6 @@ async def decide(p: dict, verb: str, pid: str, reason: str, thread: str | None) 
                 f"⛔ @{user} can't {verb} {pid}: it changes **{', '.join(prop['owners'])}** documents, "
                 f"which only {', '.join('@'+u for u in sorted(allowed)) or 'their owners'} can sign off. Nothing was merged.",
                 thread_id=thread)
-            await log_decision({"when": dt.datetime.now().isoformat(timespec="minutes"), "id": pid, "title": prop["title"],
-                                "decision": f"{verb} refused (not an owner)", "by": user})
             return
         now = dt.datetime.now().isoformat(timespec="minutes")
         if verb.lower() == "reject":
