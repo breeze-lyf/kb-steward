@@ -20,7 +20,8 @@ import json, pathlib
 import bootstrap
 bootstrap.seed_kb()
 s = pathlib.Path("/data/state")
-(s / "proposals.json").unlink(missing_ok=True)
+for name in ("proposals.json", "answers.json", "answers.json.lock"):
+    (s / name).unlink(missing_ok=True)
 for name in ("decisions.json", "gaps.json"):
     d = s / name
     if d.exists():

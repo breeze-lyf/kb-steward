@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "agents"))
 
 import kb_core  # noqa: E402
 import curator  # noqa: E402
+import ledger  # noqa: E402
 
 
 def sh(*a, cwd):
@@ -146,6 +147,72 @@ class Core(unittest.TestCase):
         self.assertIn("负责人", txt)
         self.assertIn("置信度: 高", txt)
         self.assertIn("天未复核", txt)
+
+    def test_used_sources(self):
+        sources = [kb_core.Section("p", "one", ""), kb_core.Section("p", "two", "")]
+        for used, expected in [([2, 2, 0, 99, "1"], [sources[1]]), ([], [sources[0]]),
+                               ([99], [sources[0]]), ([2, 1], sources[::-1])]:
+            self.assertEqual(kb_core.used_sources({"sources": sources, "used": used}), expected)
+        self.assertEqual(kb_core.used_sources({}), [])
+
+    def test_ledger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger.FILE = Path(tmp) / "answers.json"
+            try:
+                entry = {"thread": "t", "asker": "alice", "question": "allowance?", "lang": "en",
+                         "kb_commit": "abc", "answer": "$50 " * 200, "when": "now",
+                         "cites": [{"path": "p.md", "section": "Meals"}]}
+                self.assertIsNone(ledger.record({**entry, "cites": []}))
+                a1 = ledger.record(entry)
+                self.assertEqual(a1, "A-1")
+                self.assertEqual(ledger.affected({"p.md": ["Other"]}), [])
+                hits = ledger.affected({"p.md": ["Meals"]})
+                self.assertEqual(len(hits[0]["answer"]), 500)
+                self.assertEqual(ledger.summarize(hits), (1, 1))
+                a2 = ledger.record(entry)
+                self.assertEqual([e["id"] for e in ledger.affected({"p.md": ["Meals"]})], [a2])
+                ledger.record({**entry, "asker": "bob"})
+                self.assertEqual(len(ledger.affected({"p.md": ["Meals"]})), 1)
+                intro = ledger.record({**entry, "thread": "intro", "cites": [{"path": "p.md", "section": "p.md"}]})
+                title_path = "finance/expense-policy.md"
+                title = self.idx.files[title_path]["title"]
+                title_id = ledger.record({**entry, "thread": "title", "cites": [{"path": title_path, "section": title}]})
+                hits = ledger.affected({"p.md": ["Meals"], title_path: ["Any section"]})
+                self.assertEqual(ledger.summarize(hits), (3, 3))
+                self.assertIn(title_id, [e["id"] for e in hits])
+                ledger.mark_corrected([e["id"] for e in hits], "KB-1")
+                # The other asker in the same thread remains eligible for a later proposal.
+                remaining = ledger.affected({"p.md": ["Meals"], title_path: ["Any section"]})
+                self.assertEqual([r["id"] for r in remaining], [a2])
+                ledger.mark_corrected([a2], "KB-2")
+                self.assertEqual(ledger.affected({"p.md": ["Meals"]}), [])
+                import json
+                rows = json.loads(ledger.FILE.read_text())
+                self.assertEqual(next(r for r in rows if r["id"] == intro)["corrected_by"], "KB-1")
+                self.assertTrue(Path(str(ledger.FILE) + ".lock").exists())
+            finally:
+                ledger.FILE = None
+
+    def test_retro_message(self):
+        entry = {"asker": "alice", "answer": "Meals cost $50 and take 7 days."}
+        changes = ["$50 → $65", "7 days → 30 days", "$99 → $100"]
+        en = curator.retro_message(entry, "KB-2", changes, "en")
+        self.assertIn("@alice correction: earlier I told you $50; KB-2 corrected it to $65.", en)
+        self.assertIn("7 days", en)
+        self.assertNotIn("$99", en)
+        zh = curator.retro_message(entry, "KB-2", changes, "zh")
+        self.assertIn("@alice 更正：之前我告诉你 $50，KB-2 已更正为 $65。", zh)
+        for lang, phrase, retry in [("en", "Updated answer: Fresh", "Please re-ask"),
+                                    ("zh", "更新后的回答：Fresh", "请重新提问")]:
+            self.assertIn(phrase, curator.retro_message(entry, "KB-2", [], lang, "Fresh"))
+            self.assertIn(retry, curator.retro_message(entry, "KB-2", [], lang))
+
+    def test_impact_retro(self):
+        imp = {"files": {"p.md": ["Meals"]}, "risk": "wording"}
+        self.assertIn("0 past answer(s) in 0 thread(s) will be corrected",
+                      "\n".join(curator.fmt_impact(imp, "en", (0, 0))))
+        self.assertIn("将更正 2 个帖子中的 3 条历史回答",
+                      "\n".join(curator.fmt_impact(imp, "zh", (3, 2))))
 
     def test_stale_report(self):
         rep = kb_core.stale_report(self.idx, {"finance": {"finance-lead"}}, "zh")

@@ -185,12 +185,21 @@ async def answer(index: KBIndex, question: str, history: str = "", lang: str | N
     return out
 
 
+def _used_indices(out: dict) -> list[int]:
+    srcs = out.get("sources", [])
+    used = [i for i in out.get("used", []) if isinstance(i, int) and 1 <= i <= len(srcs)] or ([1] if srcs else [])
+    return list(dict.fromkeys(used))
+
+
+def used_sources(out: dict) -> list[Section]:
+    return [out["sources"][i - 1] for i in _used_indices(out)]
+
+
 def format_answer(index: KBIndex, out: dict) -> str:
     lang = out.get("lang", "en")
     t = L.get(lang, L["en"])
     srcs: list[Section] = out.get("sources", [])
-    used = [i for i in out.get("used", []) if isinstance(i, int) and 1 <= i <= len(srcs)] or ([1] if srcs else [])
-    used = list(dict.fromkeys(used))
+    used = _used_indices(out)
     remap = {old: new for new, old in enumerate(used, 1)}
     text = re.sub(r"\[(\d+)\]", lambda m: f"[{remap[int(m.group(1))]}]" if int(m.group(1)) in remap else "",
                   out.get("answer", "")).strip()

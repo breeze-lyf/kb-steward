@@ -6,11 +6,13 @@ hands the thread to kb-curator with a mention, which is a Switch hand-off.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
 import os
 
 import kb_core
-from common import KB_REPO, SWITCH_URL, is_agent, room_id, strip_mentions
+import ledger
+from common import KB_REPO, SWITCH_URL, is_agent, room_id, sender_handle, strip_mentions
 from switch_proto import SwitchAgent
 
 log = logging.getLogger("kb-answerer")
@@ -41,6 +43,15 @@ async def on_message(data: dict, p: dict) -> None:
     await agent.typing(rid, False)
     if is_agent(p):
         return  # re-checks requested by the curator end here
+    if not out.get("conflict") and out.get("confidence") != "low":
+        try:
+            ledger.record({"thread": thread, "asker": sender_handle(p), "question": q,
+                           "lang": out.get("lang", "en"), "kb_commit": index.head,
+                           "answer": out.get("answer", ""),
+                           "cites": [{"path": s.path, "section": s.heading} for s in kb_core.used_sources(out)],
+                           "when": dt.datetime.now().isoformat()})
+        except Exception:
+            log.exception("answer ledger write failed")
     srcs = out.get("sources", [])
     conflict = out.get("conflict")
     if conflict and isinstance(conflict, dict):

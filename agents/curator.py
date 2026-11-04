@@ -22,6 +22,7 @@ import shutil
 from pathlib import Path
 
 import kb_core
+import ledger
 import llm
 from common import (KB_REPO, STATE, SWITCH_URL, approvers, is_agent, room_id,
                     sender_handle, strip_mentions)
@@ -45,6 +46,11 @@ ZH_HINT = re.compile(r"(过时|过期了|不对|错了|有误|改成|改为|应�
 STALE_CMD = re.compile(r"\b(stale (report|sweep|docs?)|review report)\b|复核报告|过期(文档|报告)|超期文档", re.I)
 T = {
     "en": {
+        'impact_retro': '{n} past answer(s) in {m} thread(s) will be corrected',
+        'retro_done': '📣 Sent {n} correction(s) to past answers in {m} thread(s).',
+        'retro_numeric': '@{asker} correction: earlier I told you {old}; {pid} corrected it to {new}.',
+        'retro_updated': '@{asker} correction to my earlier answer: the knowledge base changed ({pid}). Updated answer: {new_answer}',
+        'retro_retry': '@{asker} correction to my earlier answer: the knowledge base changed ({pid}). Please re-ask your question for an updated answer.',
         "new": "(new)",
         "gap_drafting": "On it: @{who} answered gap {gid}. Drafting **{pid}** for the {owner} docs…",
         "gap_closed": "@{asker} your question _{q}_ is now in the knowledge base ({pid}, `{files}`), approved by @{user}.",
@@ -65,6 +71,11 @@ T = {
         "risk_text": "wording-only change, no numbers changed", "risk_multi": "; {n} docs must stay in sync",
     },
     "zh": {
+        'impact_retro': '将更正 {m} 个帖子中的 {n} 条历史回答',
+        'retro_done': '📣 已更正 {m} 个帖子中的 {n} 条历史回答。',
+        'retro_numeric': '@{asker} 更正：之前我告诉你 {old}，{pid} 已更正为 {new}。',
+        'retro_updated': '@{asker} 更正之前的回答：知识库已更新（{pid}）。更新后的回答：{new_answer}',
+        'retro_retry': '@{asker} 更正之前的回答：知识库已更新（{pid}）。请重新提问以获取最新回答。',
         "new": "（新建）",
         "gap_drafting": "收到：@{who} 回答了缺口 {gid}，正在为 {owner} 文档起草 **{pid}**…",
         "gap_closed": "@{asker} 你的问题 _{q}_ 已收录到知识库（{pid}，`{files}`），由 @{user} 批准。",
@@ -265,13 +276,28 @@ def impact(repo_dir: Path, base: str, branch: str, lang: str = "en") -> dict:
     return {"files": files, "new_files": new_files, "changes": changes, "risk": risk}
 
 
-def fmt_impact(imp: dict, lang: str) -> list[str]:
+def fmt_impact(imp: dict, lang: str, retro: tuple[int, int] | None = None) -> list[str]:
     t = T[lang]
     secs = [f"`{f}` § {s}" for f, ss in imp["files"].items() for s in ss]
     return [t["impact"],
             "- " + t["impact_files"].format(n=len(imp["files"]), files=", ".join(f"`{f}`" + (" " + t["new"] if f in imp.get("new_files", []) else "") for f in imp["files"])),
             "- " + t["impact_secs"].format(secs="; ".join(secs) or "—"),
-            f"- {t['risk']}: {imp['risk']}"]
+            f"- {t['risk']}: {imp['risk']}"] + (["- " + t["impact_retro"].format(n=retro[0], m=retro[1])] if retro is not None else [])
+
+
+def retro_pairs(entry: dict, changes: list[str]) -> list[tuple[str, str]]:
+    return [(old, new) for c in changes if " → " in c
+            for old, new in [c.split(" → ", 1)] if old in entry.get("answer", "")]
+
+
+def retro_message(entry: dict, pid: str, changes: list[str], lang: str, new_answer=None) -> str:
+    t = T[lang]
+    pairs = retro_pairs(entry, changes)
+    if pairs:
+        return "; ".join(t["retro_numeric"].format(asker=entry["asker"], pid=pid, old=old, new=new)
+                         for old, new in pairs)
+    return t["retro_updated" if new_answer else "retro_retry"].format(
+        asker=entry["asker"], pid=pid, new_answer=new_answer)
 
 
 # ---------------------------------------------------------------- the coding loop
@@ -479,6 +505,9 @@ async def propose(thread: str | None, instruction: str, question: str, requested
                     created=dt.datetime.now().isoformat(timespec="minutes"))
         if gap:
             prop.update(gap_id=gap["id"], gap_asker=gap["asked_by"], kind="gap")
+        retro = ledger.affected(prop["impact"]["files"])
+        prop["retro"] = [e["id"] for e in retro]
+        prop["recheck_asker"] = (gap or {}).get("asked_by") or ledger.asker_for(thread, question)
         preview = ""
         if question:
             try:
@@ -494,7 +523,7 @@ async def propose(thread: str | None, instruction: str, question: str, requested
     body = [f"📝 **{pid} · {prop['title']}** — `{prop['branch']}` ({prop['stat'].strip()})",
             prop["summary"], "",
             f"{t['files']}: " + ", ".join(f"`{f}`" + (" " + t["new"] if f in prop["impact"].get("new_files", []) else "") for f in prop["files"]) + f" · {t['owner']}: **{', '.join(prop['owners'])}**",
-            "", *fmt_impact(prop["impact"], lang), "",
+            "", *fmt_impact(prop["impact"], lang, ledger.summarize(retro)), "",
             "```diff", fmt_diff(prop["diff"]), "```"]
     if preview:
         body += [t["preview"].format(p=preview)]
@@ -528,10 +557,14 @@ async def decide(p: dict, verb: str, pid: str, reason: str, thread: str | None) 
             await agent.reply(t["rejected"].format(pid=pid, user=user), thread_id=thread)
             await log_decision({"when": now, "id": pid, "title": prop["title"], "decision": f"rejected: {reason[:80]}", "by": user})
             return
+        retro = ledger.affected(prop["impact"]["files"])
+        rn, rm = ledger.summarize(retro)
         git(KB_REPO, "-c", "user.name=kb-curator", "-c", "user.email=kb-curator@example.invalid",
             "merge", "--no-ff", "-q", prop["branch"], "-m", f"Merge {pid}: {prop['title']}",
+            "-m", f"Retro-corrections: {rn} answers in {rm} threads",
             "-m", f"Approved-by: {user} in Switch room kb-ops\nRequested-by: {prop['requested_by']}\n"
                   f"Impact: {(prop.get('impact') or {}).get('risk', 'n/a')}")
+        retro = ledger.affected(prop["impact"]["files"])
         commit = git(KB_REPO, "rev-parse", "--short", "HEAD")
         git(KB_REPO, "worktree", "remove", "--force", prop["dir"], check=False)
         git(KB_REPO, "branch", "-d", prop["branch"], check=False)
@@ -541,7 +574,31 @@ async def decide(p: dict, verb: str, pid: str, reason: str, thread: str | None) 
         save(PROPS, props)
     await agent.reply(t["merged"].format(pid=pid, user=user, commit=commit, n=len(idx.sections), d=len(idx.files)),
                       thread_id=thread)
-    await log_decision({"when": now, "id": pid, "title": prop["title"], "decision": "approved + merged", "by": user, "commit": commit})
+    sent, corrected = [], []
+    for entry in retro:
+        try:
+            if True:  # also in the proposal thread: the asker gets an explicit @-mention correction
+                new_answer = None
+                if not retro_pairs(entry, prop["impact"]["changes"]):
+                    try:
+                        out = await kb_core.answer(idx, entry["question"], lang=entry["lang"])
+                        if not out.get("conflict") and out.get("confidence") != "low":
+                            new_answer = re.sub(r"\s*\[\d+\]", "", out.get("answer", "")).strip()
+                    except Exception:
+                        log.exception("retro answer failed")
+                await agent.reply(retro_message(entry, pid, prop["impact"]["changes"], entry["lang"], new_answer),
+                                  thread_id=entry["thread"])
+                sent.append(entry)
+            corrected.append(entry["id"])
+        except Exception:
+            log.exception("retro correction failed for %s", entry["id"])
+    ledger.mark_corrected(corrected, pid)
+    n, m = ledger.summarize(sent)
+    if n:
+        await agent.reply(t["retro_done"].format(n=n, m=m), thread_id=prop.get("thread") or thread)
+    await log_decision({"when": now, "id": pid,
+                        "title": prop["title"] + f"; Retro-corrected: {n} answers in {m} threads",
+                        "decision": "approved + merged", "by": user, "commit": commit})
     push = os.environ.get("KB_PUSH_REMOTE")
     if push:
         git(KB_REPO, "push", "-q", push, "main", check=False)
