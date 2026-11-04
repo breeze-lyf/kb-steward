@@ -32,7 +32,7 @@ KB Steward 把团队频道变成知识库的"受控变更流程"：
 ## 演示
 
 📺 视频：[KB Steward demo v2（2:13，英文主线 + 中文闭环）](https://youtu.be/HDlKPY9HajU) · [v1（1:58）](https://youtu.be/8xKwF6o_T2U)，分镜见 [DEMO.md](DEMO.md)。
-📝 博客：[英文版](https://breeze-lyf.hashnode.dev/kb-steward-teaching-two-agents-to-fix-the-wiki-from-team-chat-on-switch) · 中文版见 [docs/POST.zh-CN.md](docs/POST.zh-CN.md)
+📝 博客：[英文版](https://breeze-lyf.hashnode.dev/kb-steward-teaching-two-agents-to-fix-the-wiki-from-team-chat-on-switch) · [中文版](https://breeze-lyf.hashnode.dev/kb-steward-agent-switch)
 
 2026-11-04 在同一套环境上的中文实跑记录（`kb-seed/zh/`，略有删节）：
 

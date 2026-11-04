@@ -41,7 +41,7 @@ How the loop works:
 ## Demo
 
 📺 Video: [KB Steward demo v2 (2:13, English + Chinese loop)](https://youtu.be/HDlKPY9HajU) · [v1 (1:58)](https://youtu.be/8xKwF6o_T2U) — shot list in [DEMO.md](DEMO.md).
-📝 Blog: [KB Steward: Teaching Two Agents to Fix the Wiki From Team Chat, on Switch](https://breeze-lyf.hashnode.dev/kb-steward-teaching-two-agents-to-fix-the-wiki-from-team-chat-on-switch)
+📝 Blog: [KB Steward: Teaching Two Agents to Fix the Wiki From Team Chat, on Switch](https://breeze-lyf.hashnode.dev/kb-steward-teaching-two-agents-to-fix-the-wiki-from-team-chat-on-switch) · [中文版](https://breeze-lyf.hashnode.dev/kb-steward-agent-switch)
 
 Real transcript from a run on DeepSeek (`kb-ops` channel, example data, lightly trimmed):
 

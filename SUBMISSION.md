@@ -48,6 +48,6 @@ correction the update, while keeping humans as the authority.
 
 **Blog post (optional):** https://breeze-lyf.hashnode.dev/kb-steward-teaching-two-agents-to-fix-the-wiki-from-team-chat-on-switch
 
-**Chinese blog post (中文博文):** _TODO — link to be filled after publishing (draft: docs/POST.zh-CN.md)_
+**Chinese blog post (中文博文):** https://breeze-lyf.hashnode.dev/kb-steward-agent-switch
 
 **README:** English [README.md](README.md) · 中文 [README.zh-CN.md](README.zh-CN.md)
