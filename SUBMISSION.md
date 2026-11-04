@@ -38,4 +38,4 @@ correction the update, while keeping humans as the authority.
 
 **What's next:** push merged changes as PRs to a real docs repo (GitHub/Confluence), scheduled stale-doc sweeps that ask owners to re-confirm, Slack/Teams rollout.
 
-**Blog post (optional):** _<link if written>_
+**Blog post (optional):** https://breeze-lyf.hashnode.dev/kb-steward-teaching-two-agents-to-fix-the-wiki-from-team-chat-on-switch
