@@ -27,7 +27,7 @@ The AI does the real work (impact analysis, multi-file edits, verification); peo
 
 ## Demo
 
-📺 Video: _link added after recording_ — shot list in [DEMO.md](DEMO.md).
+📺 Video: [KB Steward demo (1:58)](https://youtu.be/8xKwF6o_T2U) — shot list in [DEMO.md](DEMO.md).
 
 Real transcript from a run on DeepSeek (`kb-ops` channel, example data, lightly trimmed):
 

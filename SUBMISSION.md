@@ -8,7 +8,7 @@
 
 **Repository:** https://github.com/breeze-lyf/kb-steward
 
-**Demo video:** _<paste YouTube/Loom link after upload>_
+**Demo video:** https://youtu.be/8xKwF6o_T2U
 
 **Team:** solo — breeze
 
