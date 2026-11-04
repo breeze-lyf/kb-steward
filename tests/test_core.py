@@ -88,6 +88,57 @@ class Core(unittest.TestCase):
         self.assertIn("数值类", imp["risk"])
         self.assertTrue(any("影响分析" in l for l in curator.fmt_impact(imp, "zh")))
 
+    def test_validate_new_doc(self):
+        en = "---\ntitle: Parking\nowner: finance\nlast_reviewed: 2026-11-04\n---\n## Allowance\n$20 per day.\n"
+        zh = en.replace("---\n##", "lang: zh\n---\n##")
+        self.assertIsNone(curator.validate_new_doc("finance/parking.md", en, {"finance"}, "en"))
+        self.assertIsNone(curator.validate_new_doc("zh/finance/parking.md", zh, {"finance"}, "zh"))
+        for path, content, lang in [
+            ("../x.md", en, "en"), ("/finance/x.md", en, "en"),
+            ("finance/x.txt", en, "en"), ("finance/README.md", en, "en"),
+            ("finance/x.md", en.replace("owner: finance\n", ""), "en"),
+            ("finance/x.md", en.replace("owner: finance", "owner: unknown"), "en"),
+            ("finance/x.md", en.replace("2026-11-04", "2026-02-30"), "en"),
+            ("zh/finance/x.md", zh, "en"), ("finance/nested/x.md", en, "en")]:
+            with self.subTest(path=path, content=content):
+                self.assertIsNotNone(curator.validate_new_doc(path, content, {"finance"}, lang))
+
+    def test_pick_owner(self):
+        owners = {"finance": {"alice"}, "support": {"bob"}}
+        self.assertEqual(curator.pick_owner("support", "alice", owners), "support")
+        self.assertEqual(curator.pick_owner("unknown", "bob", owners), "support")
+        self.assertEqual(curator.pick_owner(None, "eve", owners), "finance")
+
+    def test_open_gap_for_thread(self):
+        row = {"id": "G-2", "thread": "t", "status": "open"}
+        gaps = {"rows": [{"thread": "t", "status": "answered by KB-1"}, row]}
+        self.assertIs(curator.open_gap_for_thread(gaps, "t"), row)
+        self.assertIsNone(curator.open_gap_for_thread(gaps, "other"))
+        self.assertIsNone(curator.open_gap_for_thread(gaps, None))
+
+    def test_workspace_create(self):
+        curator.WORK.mkdir(parents=True, exist_ok=True)
+        ws = curator.Workspace("CREATE", "en", owners={"finance"})
+        content = "---\ntitle: Parking\nowner: finance\nlast_reviewed: 2026-11-04\n---\n## Allowance\n$20 per day.\n## Claims\nKeep receipts.\n"
+        try:
+            args = {"path": "finance/parking.md", "content": content}
+            self.assertIn("refused:", ws.call("create_file", args))
+            ws.mode = "gap"
+            self.assertEqual(ws.call("create_file", args), "ok")
+            self.assertIn("already exists", ws.call("create_file", args))
+            self.assertIn("owner cannot change", ws.call("write_file", {
+                **args, "content": content.replace("owner: finance", "owner: support")}))
+            self.assertIn("refused:", ws.call("write_file", {**args, "path": "finance/absent.md"}))
+            sh("git", "add", "-A", cwd=ws.dir)
+            sh("git", "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "new doc", cwd=ws.dir)
+            imp = curator.impact(ws.dir, "main", ws.branch)
+            self.assertEqual(imp["files"][args["path"]], ["Allowance", "Claims"])
+            self.assertEqual(imp["new_files"], [args["path"]])
+            self.assertIn("(new)", "\n".join(curator.fmt_impact(imp, "en")))
+        finally:
+            kb_core.git(self.kb, "worktree", "remove", "--force", str(ws.dir))
+            kb_core.git(self.kb, "branch", "-D", ws.branch)
+
     def test_format_answer_zh(self):
         hits = self.idx.search("出差餐补", lang="zh")
         out = {"answer": "每天 ¥100 [1]。", "used": [1], "confidence": "high", "sources": [s for _, s in hits], "lang": "zh"}

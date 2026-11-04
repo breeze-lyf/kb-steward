@@ -45,6 +45,9 @@ ZH_HINT = re.compile(r"(过时|过期了|不对|错了|有误|改成|改为|应�
 STALE_CMD = re.compile(r"\b(stale (report|sweep|docs?)|review report)\b|复核报告|过期(文档|报告)|超期文档", re.I)
 T = {
     "en": {
+        "new": "(new)",
+        "gap_drafting": "On it: @{who} answered gap {gid}. Drafting **{pid}** for the {owner} docs…",
+        "gap_closed": "@{asker} your question _{q}_ is now in the knowledge base ({pid}, `{files}`), approved by @{user}.",
         "drafting": "On it: drafting **{pid}** from @{who}'s correction. Checking every doc that states this fact…",
         "nochange": "I couldn't find anything in the KB that this changes, so no edit was made.",
         "files": "Files", "owner": "owner",
@@ -62,6 +65,9 @@ T = {
         "risk_text": "wording-only change, no numbers changed", "risk_multi": "; {n} docs must stay in sync",
     },
     "zh": {
+        "new": "（新建）",
+        "gap_drafting": "收到：@{who} 回答了缺口 {gid}，正在为 {owner} 文档起草 **{pid}**…",
+        "gap_closed": "@{asker} 你的问题 _{q}_ 已收录到知识库（{pid}，`{files}`），由 @{user} 批准。",
         "drafting": "收到：根据 @{who} 的更正起草 **{pid}**，正在排查所有写到这条信息的文档…",
         "nochange": "知识库里没有找到这条更正涉及的内容，未做任何修改。",
         "files": "文件", "owner": "负责人",
@@ -132,14 +138,27 @@ async def log_decision(entry: dict) -> None:
     save(DECISIONS, d)
 
 
-async def log_gap(question: str, asked_by: str, lang: str) -> int:
+async def log_gap(question: str, asked_by: str, lang: str, thread: str | None) -> int:
     """Knowledge gaps view: every question the KB couldn't answer, as a room document."""
     g = load(GAPS, {"doc_id": None, "rows": []})
-    if not any(r["question"] == question and r["status"] == "open" for r in g["rows"]):
+    if not open_gap_for_thread(g, thread):
         g["rows"].append({"when": dt.datetime.now().isoformat(timespec="minutes"), "question": question,
-                          "asked_by": asked_by, "lang": lang, "status": "open"})
+                          "asked_by": asked_by, "lang": lang, "status": "open", "thread": thread,
+                          "id": f"G-{max([int(r.get('id', 'G-0').split('-')[-1]) for r in g['rows']] or [0]) + 1}"})
     await _sync_gaps(g)
     return sum(r["status"] == "open" for r in g["rows"])
+
+
+def open_gap_for_thread(gaps: dict, thread) -> dict | None:
+    return next((r for r in gaps.get("rows", []) if thread and r.get("thread") == thread
+                 and r.get("status") == "open"), None)
+
+
+def pick_owner(llm_owner, sender, approvers_map):
+    if llm_owner in approvers_map:
+        return llm_owner
+    return next((o for o, users in approvers_map.items() if sender.lower() in users),
+                next(iter(approvers_map), ""))
 
 
 async def close_gap(question: str, pid: str) -> None:
@@ -155,8 +174,8 @@ async def close_gap(question: str, pid: str) -> None:
 async def _sync_gaps(g: dict) -> None:
     lines = ["# KB knowledge gaps (kb-ops)", "",
              "Questions the knowledge base could not answer. Owners: add or fix a doc, then reply in the thread.", "",
-             "| When | Question | Asked by | Status |", "|---|---|---|---|"]
-    lines += [f"| {r['when']} | {r['question'].replace('|', '/')} | {r['asked_by']} | {r['status']} |" for r in g["rows"]]
+             "| ID | When | Question | Asked by | Thread | Status |", "|---|---|---|---|---|---|"]
+    lines += [f"| {r.get('id', '—')} | {r['when']} | {r['question'].replace('|', '/')} | {r['asked_by']} | {r.get('thread', '—')} | {r['status']} |" for r in g["rows"]]
     content = "\n".join(lines)
     try:
         if g["doc_id"]:
@@ -191,7 +210,8 @@ def section_at(lines: list[str], lineno: int, title: str) -> str:
 
 def impact(repo_dir: Path, base: str, branch: str, lang: str = "en") -> dict:
     """Which files and sections a proposal touches, and the numeric values it changes."""
-    diff = git(KB_REPO, "diff", "-U0", base, branch, "--", ".")
+    diff = git(repo_dir, "diff", "-U0", base, branch, "--", ".")
+    new_files = git(repo_dir, "diff", "--name-only", "--diff-filter=A", base, branch).splitlines()
     files: dict[str, list[str]] = {}
     changes: list[str] = []
     cur, new_lines, title = None, [], ""
@@ -235,18 +255,21 @@ def impact(repo_dir: Path, base: str, branch: str, lang: str = "en") -> dict:
         elif line.startswith("+") and not line.startswith("+last_reviewed"):
             plus.append(line[1:])
     flush()
+    for f in new_files:
+        raw = (repo_dir / f).read_text()
+        files[f] = re.findall(r"^## +(.+)$", raw, re.M) or [kb_core.parse_front_matter(raw)[0].get("title", f)]
     t = T[lang]
     risk = t["risk_num"].format(chg=", ".join(changes)) if changes else t["risk_text"]
     if len(files) > 1:
         risk += t["risk_multi"].format(n=len(files))
-    return {"files": files, "changes": changes, "risk": risk}
+    return {"files": files, "new_files": new_files, "changes": changes, "risk": risk}
 
 
 def fmt_impact(imp: dict, lang: str) -> list[str]:
     t = T[lang]
     secs = [f"`{f}` § {s}" for f, ss in imp["files"].items() for s in ss]
     return [t["impact"],
-            "- " + t["impact_files"].format(n=len(imp["files"]), files=", ".join(f"`{f}`" for f in imp["files"])),
+            "- " + t["impact_files"].format(n=len(imp["files"]), files=", ".join(f"`{f}`" + (" " + t["new"] if f in imp.get("new_files", []) else "") for f in imp["files"])),
             "- " + t["impact_secs"].format(secs="; ".join(secs) or "—"),
             f"- {t['risk']}: {imp['risk']}"]
 
@@ -274,8 +297,46 @@ A person in the team chat stated a correction or resolved a conflict. Your job:
 - Then call done. Today is {today}."""
 
 
+CREATE_TOOL = {"type": "function", "function": {"name": "create_file", "description": "Create a new Markdown owner document with title, owner and last_reviewed front matter.",
+    "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}}
+GAP_SYS = """You maintain a company knowledge base. Learn ONLY the facts stated in the supplied human answer; do not invent details.
+Search for the most relevant existing document of the selected owner. Prefer adding a new ## section if one clearly fits; otherwise create a NEW document.
+Write documents in the question language: {language}. English paths: <owner>/<slug>.md; Chinese paths: zh/<owner>/<slug>.md.
+New documents MUST start with front matter containing non-empty title, owner: <owner>, last_reviewed: {today}, and lang: zh for Chinese.
+Keep existing owners unchanged. Only edit documents of the selected owner. Set last_reviewed to {today}. Call done when finished."""
+
+
+def validate_new_doc(rel_path: str, content: str, owners: set[str], lang: str | None) -> str | None:
+    if Path(rel_path).is_absolute() or ".." in Path(rel_path).parts:
+        return "path must be relative without traversal"
+    if not re.fullmatch(r"(zh/)?[a-z0-9-]+/[a-z0-9][a-z0-9-]*\.md", rel_path):
+        return "expected <owner>/<slug>.md or zh/<owner>/<slug>.md; README.md is forbidden"
+    parts = rel_path.split("/")
+    if parts[-2] not in owners:
+        return "unknown owner directory"
+    if lang and rel_path.startswith("zh/") != (lang == "zh"):
+        return "path outside language scope"
+    meta, _ = kb_core.parse_front_matter(content)
+    if not content.startswith("---\n") or not meta.get("title"):
+        return "front matter requires a title"
+    if meta.get("owner") not in owners or meta.get("owner") != parts[-2]:
+        return "front matter requires a known matching owner"
+    try:
+        date = meta.get("last_reviewed", "")
+        if dt.date.fromisoformat(date).isoformat() != date:
+            return "last_reviewed must be an ISO date"
+    except ValueError:
+        return "last_reviewed must be an ISO date"
+    if lang == "zh" and meta.get("lang") != "zh":
+        return "Chinese documents require lang: zh"
+    if meta.get("lang", "zh" if rel_path.startswith("zh/") else "en") != ("zh" if rel_path.startswith("zh/") else "en"):
+        return "front matter language conflicts with path"
+    return None
+
+
 class Workspace:
-    def __init__(self, pid: str, lang: str | None = None):
+    def __init__(self, pid: str, lang: str | None = None, mode: str = "correction", owners: set[str] | None = None):
+        self.mode, self.owners = mode, set(approvers()) if owners is None else owners
         self.lang = lang  # en and zh are separate example KBs: a correction only touches docs in its language
         self.dir = WORK / pid
         self.branch = f"kb/{pid}"
@@ -289,7 +350,7 @@ class Workspace:
 
     def safe(self, path: str) -> Path:
         p = (self.dir / path).resolve()
-        if not str(p).startswith(str(self.dir.resolve())) or not p.suffix == ".md":
+        if not p.is_relative_to(self.dir.resolve()) or ".git" in Path(path).parts or not p.suffix == ".md":
             raise ValueError("path outside KB")
         return p
 
@@ -316,26 +377,44 @@ class Workspace:
             return "\n".join(out[:40]) or "no matches"
         if name == "read_file":
             return self.safe(a["path"]).read_text()
+        if name == "create_file":
+            if self.mode != "gap":
+                return "refused: create_file is only available in gap mode"
+            reason = validate_new_doc(a["path"], a["content"], self.owners, self.lang)
+            if reason:
+                return "refused: " + reason
+            try:
+                p = self.safe(a["path"])
+            except ValueError:
+                return "refused: path outside worktree"
+            if p.exists():
+                return "refused: file already exists"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(a["content"].rstrip() + "\n")
+            self.written.add(a["path"])
+            return "ok"
         if name == "write_file":
             p = self.safe(a["path"])
             if not p.exists():
                 return "refused: only existing files can be edited in this demo"
             if not self.in_scope(a["path"]):
                 return f"refused: {a['path']} belongs to the other-language KB, which is maintained separately"
+            if kb_core.parse_front_matter(p.read_text())[0].get("owner") != kb_core.parse_front_matter(a["content"])[0].get("owner"):
+                return "refused: front matter owner cannot change"
             p.write_text(a["content"].rstrip() + "\n")
             self.written.add(a["path"])
             return "ok"
         return "unknown tool"
 
 
-async def draft_fix(pid: str, instruction: str, context: str, lang: str = "en", scope: str | None = None) -> dict | None:
-    ws = Workspace(pid, scope)
+async def draft_fix(pid: str, instruction: str, context: str, lang: str = "en", scope: str | None = None, mode: str = "correction") -> dict | None:
+    ws = Workspace(pid, scope, mode, set(approvers()))
     today = dt.date.today().isoformat()
-    msgs = [{"role": "system", "content": CURATOR_SYS.format(today=today)},
+    msgs = [{"role": "system", "content": (GAP_SYS if mode == "gap" else CURATOR_SYS).format(today=today, language=kb_core.LANG_NAME[scope or lang])},
             {"role": "user", "content": f"Chat thread:\n{context}\n\nCorrection to apply:\n{instruction}"}]
     result = None
     for step in range(12):
-        m = await llm.chat(msgs, tools=TOOLS, max_tokens=4096)
+        m = await llm.chat(msgs, tools=TOOLS + ([CREATE_TOOL] if mode == "gap" else []), max_tokens=4096)
         msgs.append({k: v for k, v in m.items() if k in ("role", "content", "tool_calls")})
         calls = m.get("tool_calls") or []
         if not calls:
@@ -384,19 +463,22 @@ def fmt_diff(diff: str, limit: int = 3500) -> str:
 
 # ---------------------------------------------------------------- flows
 async def propose(thread: str | None, instruction: str, question: str, requested_by: str, lang: str = "en",
-                  scope: str | None = None) -> None:
+                  scope: str | None = None, mode: str = "correction", gap: dict | None = None, owner: str = "") -> None:
     t = T[lang]
     async with lock:
         props = load(PROPS, {})
         pid = f"KB-{len(props) + 1}"
-        await agent.reply(t["drafting"].format(pid=pid, who=requested_by), thread_id=thread)
+        await agent.reply(t["gap_drafting" if mode == "gap" else "drafting"].format(
+            pid=pid, who=requested_by, gid=(gap or {}).get("id"), owner=owner), thread_id=thread)
         context = await thread_text(thread)
-        prop = await draft_fix(pid, instruction, context, lang, scope or lang)
+        prop = await draft_fix(pid, instruction, context, lang, scope or lang, mode)
         if not prop:
             await agent.reply(t["nochange"], thread_id=thread)
             return
         prop.update(thread=thread, question=question, requested_by=requested_by,
                     created=dt.datetime.now().isoformat(timespec="minutes"))
+        if gap:
+            prop.update(gap_id=gap["id"], gap_asker=gap["asked_by"], kind="gap")
         preview = ""
         if question:
             try:
@@ -411,7 +493,7 @@ async def propose(thread: str | None, instruction: str, question: str, requested
     tag = " ".join(f"@{u}" for u in who) or "an owner"
     body = [f"📝 **{pid} · {prop['title']}** — `{prop['branch']}` ({prop['stat'].strip()})",
             prop["summary"], "",
-            f"{t['files']}: " + ", ".join(f"`{f}`" for f in prop["files"]) + f" · {t['owner']}: **{', '.join(prop['owners'])}**",
+            f"{t['files']}: " + ", ".join(f"`{f}`" + (" " + t["new"] if f in prop["impact"].get("new_files", []) else "") for f in prop["files"]) + f" · {t['owner']}: **{', '.join(prop['owners'])}**",
             "", *fmt_impact(prop["impact"], lang), "",
             "```diff", fmt_diff(prop["diff"]), "```"]
     if preview:
@@ -464,9 +546,27 @@ async def decide(p: dict, verb: str, pid: str, reason: str, thread: str | None) 
     if push:
         git(KB_REPO, "push", "-q", push, "main", check=False)
     if prop.get("question"):
-        await close_gap(prop["question"], pid)
-        await agent.op("send_targeted_message", target_names=["kb-answerer"], thread_id=thread,
+        if prop.get("kind") == "gap":
+            g = load(GAPS, {"doc_id": None, "rows": []})
+            for row in g["rows"]:
+                if row.get("id") == prop["gap_id"]:
+                    row["status"] = f"answered by {pid}"
+            await _sync_gaps(g)
+            await agent.reply(t["gap_closed"].format(asker=prop["gap_asker"], q=prop["question"],
+                pid=pid, files=", ".join(prop["files"]), user=user), thread_id=prop["thread"])
+        else:
+            await close_gap(prop["question"], pid)
+        await agent.op("send_targeted_message", target_names=["kb-answerer"], thread_id=prop.get("thread") or thread,
                        body=f"re-check: {prop['question']}")
+
+
+async def classify_gap_answer(question: str, body: str, context: str, owners) -> dict:
+    return await llm.chat_json([
+        {"role": "system", "content": "Decide whether the LAST human message answers the knowledge gap question. "
+         "Questions and chit-chat are not answers. Extract ONLY facts stated by that human in one or two precise "
+         "sentences, in the same language as their message. Select an owner from the supplied keys and a short slug-able topic. "
+         'Return JSON {"answers_gap": bool, "answer": str, "owner": str, "topic": str}.'},
+        {"role": "user", "content": f"Owner keys: {list(owners)}\nQuestion: {question}\nThread: {context}\nLAST message: {body}"}], max_tokens=400)
 
 
 async def classify(body: str, context: str) -> dict:
@@ -506,8 +606,8 @@ async def on_message(data: dict, p: dict) -> None:
             if kind == "CONFLICT":
                 await agent.reply(T[lang]["conflict"].format(tag=tag), thread_id=thread)
             else:
-                asker = (re.search(r"asked by: ([\w.\-]+)", body) or [None, "?"])[1]
-                n = await log_gap(q, asker, lang)
+                asker = (re.search(r"asked by: ([^·]+)", body) or [None, "?"])[1]
+                n = await log_gap(q, asker.strip(), lang, thread)
                 await agent.reply(T[lang]["gap"].format(q=q, n=n), thread_id=thread)
         return
 
@@ -521,6 +621,19 @@ async def on_message(data: dict, p: dict) -> None:
         idx = kb_core.KBIndex(KB_REPO)
         await agent.reply(kb_core.stale_report(idx, approvers(), kb_core.lang_of(strip_mentions(body))), thread_id=thread)
         return
+
+    gap = open_gap_for_thread(load(GAPS, {"rows": []}), thread)
+    if gap and sender_handle(p) != gap["asked_by"].strip().lower():
+        context = await thread_text(thread)
+        appr = approvers()
+        verdict = await classify_gap_answer(gap["question"], strip_mentions(body), context, appr)
+        if verdict.get("answers_gap") is True:
+            owner = pick_owner(verdict.get("owner"), sender_handle(p), appr)
+            if owner:
+                instruction = f"Owner: {owner}\nTopic: {verdict.get('topic', '')}\nQuestion: {gap['question']}\nHuman answer: {verdict.get('answer', '')}"
+                await propose(thread, instruction, gap["question"], sender_handle(p), gap["lang"],
+                              gap["lang"], mode="gap", gap=gap, owner=owner)
+                return
 
     if not (p.get("addressed") or HINT.search(body) or ZH_HINT.search(body) or thread in pending):
         return
