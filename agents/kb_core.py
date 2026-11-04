@@ -10,7 +10,6 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import llm
 
 STALE_DAYS = int(os.environ.get("KB_STALE_DAYS", "365"))
 TOKEN = re.compile(r"[a-z0-9$€¥%]+|[\u4e00-\u9fff]+")
@@ -97,6 +96,8 @@ class KBIndex:
         for p in sorted(self.root.rglob("*.md")):
             if ".git" in p.parts or p.name.lower() == "readme.md":
                 continue
+            if not p.resolve().is_relative_to(self.root.resolve()):
+                continue
             rel = str(p.relative_to(self.root))
             meta, body = parse_front_matter(p.read_text())
             self.files[rel] = meta
@@ -168,6 +169,7 @@ CONF_ZH = {"high": "高", "medium": "中", "low": "低"}
 
 
 async def answer(index: KBIndex, question: str, history: str = "", lang: str | None = None) -> dict:
+    import llm  # Keep the read-only index usable without third-party dependencies.
     lang = lang or lang_of(question)
     hits = index.search(question, k=6, lang=lang)
     if not hits:

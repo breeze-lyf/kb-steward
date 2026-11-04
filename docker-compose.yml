@@ -29,6 +29,16 @@ services:
     command: python curator.py
     depends_on:
       bootstrap: {condition: service_completed_successfully}
+  kb-dashboard:
+    <<: *agent
+    working_dir: /app
+    command: python agents/dashboard.py
+    environment:
+      DASH_BASE: /kb
+    ports:
+      - "127.0.0.1:8870:8870"
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
 
 volumes:
   kbdata:
