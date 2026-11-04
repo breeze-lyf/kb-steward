@@ -20,6 +20,29 @@ personas only. Don't show `agents.env` or `.env`.
 
 Reset between takes (on the host running the stack):
 ```bash
-docker compose down && docker volume rm kb-steward_kbdata   # volume name = <project>_kbdata
-docker compose up -d                                         # re-seeds KB + room
+scripts/reset-demo.sh          # re-seed KB (KB_LANG from agents.env, default both), clear proposals, gaps, channel
+scripts/reset-demo.sh zh       # Chinese-only KB for the Chinese take
 ```
+Full rebuild (also recreates the room): `docker compose down && docker volume rm <project>_kbdata && docker compose up -d`.
+
+## Optional add-on shots (governance features added after the first video)
+
+| # | Screen | Action / narration |
+|---|--------|------|
+| A | KB-1 proposal | Zoom on the **Impact** block: files, sections touched, `Risk: numeric policy value change ($50 → $65)`. "Before anyone approves, they see the blast radius." |
+| B | any window | `@kb-answerer how do I apply for a parking subsidy?` → low confidence → curator logs it to room document **KB knowledge gaps**. |
+| C | finance-lead | `@kb-curator stale report` → overdue docs grouped by owner with @mentions. Mention `scripts/stale-report.py --post` for a weekly cron. |
+| D | Terminal | `git log -1` now also shows an `Impact:` trailer. |
+
+## 中文版分镜（约 2:00，`scripts/reset-demo.sh zh` 后录制）
+
+| # | 画面 | 操作 / 旁白 |
+|---|------|------|
+| 1 | 标题 → kb-ops 频道 | "企业知识库最大的问题不是没写，而是写了没人改。KB Steward 把更正变成受控的知识变更：AI 做影响分析和多文件修订，人负责审批和审计。" |
+| 2 | **newhire** | `@kb-answerer 出差餐补每天多少钱？` → 中文回答 ¥100，附出处、负责人、复核日期和 ⚠️ 过期标记。 |
+| 3 | **finance-lead** | 在帖子里回复 `这个过时了，从 11 月起餐补已经是每天 ¥120，超过 ¥300 才需要开发票。`（不 @ 任何人）→ KB-1：两个文件、影响分析（¥100 → ¥120，¥200 → ¥300）、diff、新回答预览。 |
+| 4 | **support-lead** | `批准 KB-1` → ⛔ 无权审批。"只有文档负责人能批。" |
+| 5 | **finance-lead** | `批准 KB-1` → ✅ 合并、重建索引、记入决策日志；answerer 在同帖重新回答 ¥120。 |
+| 6 | **newhire** → **support-lead** | `@kb-answerer 客户申请退款的期限是多久？` → 冲突（30 天 vs 7 天）移交 → `30 天是对的，话术写错了。` → KB-2 → `批准 KB-2`。 |
+| 7 | 任意窗口 | `@kb-answerer 公司的停车补贴怎么申请？` → 记入"KB knowledge gaps"；`@kb-curator 复核报告` → 按负责人列出超期文档。 |
+| 8 | 终端 | `git log -1` 展示 `Approved-by` / `Requested-by` / `Impact` trailer。"每一次知识变更都有人提、有人批、有记录、可回滚。" |

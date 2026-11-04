@@ -9,5 +9,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} -r requirements.txt
 COPY agents/ agents/
 COPY kb-seed/ kb-seed/
+COPY scripts/ scripts/
 ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app/agents
 WORKDIR /app/agents

@@ -1,19 +1,30 @@
 #!/usr/bin/env bash
-# Reset the demo to a clean KB (keeps the Switch room and agents). Example data only.
+# Reset the demo: re-seed the KB from kb-seed/, clear proposals, decision-log rows, knowledge gaps and the
+# channel (keeps the Switch room and agents). Example data only.
+#   scripts/reset-demo.sh            # language from agents.env KB_LANG (default: both)
+#   scripts/reset-demo.sh zh         # en | zh | both
 set -euo pipefail
 cd "$(dirname "$0")/.."
+LANG_ARG=()
+[ -n "${1:-}" ] && LANG_ARG=(-e "KB_LANG=$1")
 docker compose stop kb-curator kb-answerer
-docker compose run --rm --no-deps kb-curator sh -c '
-  cd /data/kb && root=$(git rev-list --max-parents=0 HEAD | tail -1) &&
-  git worktree prune && for w in /data/state/worktrees/*; do [ -d "$w" ] && git worktree remove --force "$w" || true; done &&
-  git reset -q --hard "$root" && git for-each-ref --format="%(refname:short)" refs/heads/kb/ | xargs -r git branch -D -q &&
-  python - <<PY
+docker compose run --rm --no-deps "${LANG_ARG[@]}" kb-curator sh -c '
+  set -e
+  if [ -d /data/kb/.git ]; then
+    cd /data/kb && git worktree prune
+    for w in /data/state/worktrees/*; do [ -d "$w" ] && git worktree remove --force "$w" || true; done
+  fi
+  rm -rf /data/state/worktrees && find /data/kb -mindepth 1 -delete 2>/dev/null || true
+  cd /app/agents && python - <<PY
 import json, pathlib
+import bootstrap
+bootstrap.seed_kb()
 s = pathlib.Path("/data/state")
 (s / "proposals.json").unlink(missing_ok=True)
-d = s / "decisions.json"
-if d.exists():
-    j = json.loads(d.read_text()); j["rows"] = []; d.write_text(json.dumps(j))
+for name in ("decisions.json", "gaps.json"):
+    d = s / name
+    if d.exists():
+        j = json.loads(d.read_text()); j["rows"] = []; d.write_text(json.dumps(j))
 PY
-  cd /app/agents && python mm_say.py --wipe'
+  python mm_say.py --wipe'
 docker compose up -d kb-answerer kb-curator

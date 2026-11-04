@@ -49,7 +49,7 @@ async def on_message(data: dict, p: dict) -> None:
                        body=f"hand-off · CONFLICT · {conflict.get('summary','')} · files: {', '.join(cites)} · question: {q}")
     elif out.get("confidence") == "low":
         await agent.op("send_targeted_message", target_names=["kb-curator"], thread_id=thread,
-                       body=f"hand-off · GAP · the KB has no good answer · question: {q}")
+                       body=f"hand-off · GAP · the KB has no good answer · asked by: {p.get('sender_name') or '?'} · question: {q}")
 
 
 async def main() -> None:

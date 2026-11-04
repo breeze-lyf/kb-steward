@@ -35,9 +35,51 @@ agent = SwitchAgent("kb-curator", "KB Curator",
 WORK = STATE / "worktrees"
 PROPS = STATE / "proposals.json"
 DECISIONS = STATE / "decisions.json"
-APPROVE = re.compile(r"\b(approve|reject)\s+KB-(\d+)\b\s*(.*)", re.I | re.S)
+GAPS = STATE / "gaps.json"
+APPROVE = re.compile(r"(?:\b(approve|reject)|(批准|通过|同意|驳回|拒绝))\s*KB-(\d+)\b\s*(.*)", re.I | re.S)
+ZH_VERB = {"批准": "approve", "通过": "approve", "同意": "approve", "驳回": "reject", "拒绝": "reject"}
 HINT = re.compile(r"\b(wrong|outdated|out of date|incorrect|actually|changed|no longer|not anymore|now (it'?s|is)|"
                   r"since|update|should be|it'?s \$?\d|correct (one|value) is|is \$?\d)", re.I)
+ZH_HINT = re.compile(r"(过时|过期了|不对|错了|有误|改成|改为|应该是|其实是|已经是|不是了|更新为|更正|纠正|调整为|上调|下调|"
+                     r"从.{0,12}(改|调|变)|现在是|现在(要|只要|需要)|[¥￥$]\s*\d|\d+\s*(元|块|天))")
+STALE_CMD = re.compile(r"\b(stale (report|sweep|docs?)|review report)\b|复核报告|过期(文档|报告)|超期文档", re.I)
+T = {
+    "en": {
+        "drafting": "On it: drafting **{pid}** from @{who}'s correction. Checking every doc that states this fact…",
+        "nochange": "I couldn't find anything in the KB that this changes, so no edit was made.",
+        "files": "Files", "owner": "owner",
+        "preview": "🔎 **Preview** — on this branch, kb-answerer would now say: _{p}_",
+        "review": "{tag} please review. Reply `approve {pid}` to merge, or `reject {pid} <reason>`.",
+        "notopen": "{pid} isn't an open proposal.",
+        "denied": "⛔ @{user} can't {verb} {pid}: it changes **{owners}** documents, which only {allowed} can sign off. Nothing was merged.",
+        "rejected": "🗑️ {pid} rejected by @{user}. Branch deleted; the KB is unchanged.",
+        "merged": "✅ {pid} approved by @{user} and merged as `{commit}`. Index rebuilt: {n} sections from {d} docs. Logged to the room's *KB decision log*.",
+        "conflict": "🧭 Two documents disagree, so I won't let the answer drift. {tag}: which value is correct? Reply in this thread and I'll draft the fix for every affected doc.",
+        "gap": "🕳️ Knowledge gap logged for: _{q}_ (room document *KB knowledge gaps*, {n} open). Anyone who knows: reply in this thread and I'll draft a doc update.",
+        "help": "I maintain the KB. Tell me what's wrong or what changed and I'll draft a reviewed fix. Say `stale report` for docs overdue for review.",
+        "impact": "**Impact**", "impact_files": "{n} file(s): {files}", "impact_secs": "Sections touched: {secs}",
+        "risk": "Risk", "risk_num": "numeric policy value change ({chg}) — affects every answer that quotes it",
+        "risk_text": "wording-only change, no numbers changed", "risk_multi": "; {n} docs must stay in sync",
+    },
+    "zh": {
+        "drafting": "收到：根据 @{who} 的更正起草 **{pid}**，正在排查所有写到这条信息的文档…",
+        "nochange": "知识库里没有找到这条更正涉及的内容，未做任何修改。",
+        "files": "文件", "owner": "负责人",
+        "preview": "🔎 **预览**：在这个分支上，kb-answerer 会这样回答：_{p}_",
+        "review": "{tag} 请审核。回复 `approve {pid}`（或“批准 {pid}”）合并，或 `reject {pid} <原因>` 驳回。",
+        "notopen": "{pid} 不是待审批的提案。",
+        "denied": "⛔ @{user} 无权{verb} {pid}：它修改的是 **{owners}** 的文档，只有 {allowed} 可以审批。未合并任何内容。",
+        "rejected": "🗑️ {pid} 已被 @{user} 驳回，分支已删除，知识库保持不变。",
+        "merged": "✅ {pid} 已由 @{user} 批准，合并为 `{commit}`。索引已重建：{d} 篇文档、{n} 个章节。已记入频道文档 *KB decision log*。",
+        "conflict": "🧭 两份文档说法不一致，我不会随便选一个。{tag}：哪个才是对的？在本帖回复，我会把所有相关文档一起改好。",
+        "gap": "🕳️ 已记录知识缺口：_{q}_（频道文档 *KB knowledge gaps*，当前 {n} 条未解决）。知道答案的同事请在本帖回复，我来起草文档更新。",
+        "help": "我负责维护知识库。告诉我哪里不对或有什么变化，我会起草修订并请负责人审批。发送“复核报告”查看超期未复核的文档。",
+        "impact": "**影响分析**", "impact_files": "{n} 个文件：{files}", "impact_secs": "涉及章节：{secs}",
+        "risk": "风险", "risk_num": "数值类制度变更（{chg}），所有引用该数值的回答都会随之变化",
+        "risk_text": "仅文字调整，无数值变化", "risk_multi": "；{n} 篇文档需保持一致",
+    },
+}
+VERB_ZH = {"approve": "批准", "reject": "驳回"}
 lock = asyncio.Lock()
 pending: dict[str, dict] = {}  # thread_id -> context of an open question to an owner
 
@@ -90,6 +132,125 @@ async def log_decision(entry: dict) -> None:
     save(DECISIONS, d)
 
 
+async def log_gap(question: str, asked_by: str, lang: str) -> int:
+    """Knowledge gaps view: every question the KB couldn't answer, as a room document."""
+    g = load(GAPS, {"doc_id": None, "rows": []})
+    if not any(r["question"] == question and r["status"] == "open" for r in g["rows"]):
+        g["rows"].append({"when": dt.datetime.now().isoformat(timespec="minutes"), "question": question,
+                          "asked_by": asked_by, "lang": lang, "status": "open"})
+    await _sync_gaps(g)
+    return sum(r["status"] == "open" for r in g["rows"])
+
+
+async def close_gap(question: str, pid: str) -> None:
+    g = load(GAPS, {"doc_id": None, "rows": []})
+    hit = False
+    for r in g["rows"]:
+        if r["status"] == "open" and question and r["question"] == question:
+            r["status"], hit = f"fixed by {pid}", True
+    if hit:
+        await _sync_gaps(g)
+
+
+async def _sync_gaps(g: dict) -> None:
+    lines = ["# KB knowledge gaps (kb-ops)", "",
+             "Questions the knowledge base could not answer. Owners: add or fix a doc, then reply in the thread.", "",
+             "| When | Question | Asked by | Status |", "|---|---|---|---|"]
+    lines += [f"| {r['when']} | {r['question'].replace('|', '/')} | {r['asked_by']} | {r['status']} |" for r in g["rows"]]
+    content = "\n".join(lines)
+    try:
+        if g["doc_id"]:
+            await agent.op("update_room_document", document_id=g["doc_id"], content=content)
+        else:
+            res = await agent.op("create_room_document", name="KB knowledge gaps",
+                                 description="Questions asked in this room that the knowledge base could not answer.",
+                                 instructions="Check before writing new docs: these are the questions people actually ask.",
+                                 content=content)
+            g["doc_id"] = (res or {}).get("id") or (res or {}).get("document_id")
+    except Exception as e:  # noqa: BLE001
+        log.warning("gaps doc update failed: %s", e)
+    save(GAPS, g)
+
+
+# ---------------------------------------------------------------- impact analysis
+# policy-ish numbers only: a currency prefix or a unit suffix ("11 月" or a bare "2" is not a policy value)
+NUM = re.compile(r"[$¥￥€]\s?\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s?(?:%|元|美元|天|个?工作日|days?|business days|hours?|小时)")
+
+
+def num_kind(n: str) -> str:
+    return n[0] if n[0] in "$¥￥€" else re.sub(r"[\d,.\s]", "", n).rstrip("s")
+HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def section_at(lines: list[str], lineno: int, title: str) -> str:
+    for i in range(min(lineno, len(lines)) - 1, -1, -1):
+        if lines[i].startswith("## "):
+            return lines[i][3:].strip()
+    return title
+
+
+def impact(repo_dir: Path, base: str, branch: str, lang: str = "en") -> dict:
+    """Which files and sections a proposal touches, and the numeric values it changes."""
+    diff = git(KB_REPO, "diff", "-U0", base, branch, "--", ".")
+    files: dict[str, list[str]] = {}
+    changes: list[str] = []
+    cur, new_lines, title = None, [], ""
+    minus: list[str] = []
+    plus: list[str] = []
+
+    def flush():
+        olds = [n.strip() for l in minus for n in NUM.findall(l)]
+        news = [n.strip() for l in plus for n in NUM.findall(l)]
+        o2 = [n for n in olds if n not in news]
+        n2 = [n for n in news if n not in olds]
+        for kind in dict.fromkeys(num_kind(n) for n in o2):
+            for a, b in zip([n for n in o2 if num_kind(n) == kind], [n for n in n2 if num_kind(n) == kind]):
+                c = f"{a} → {b}"
+                if c not in changes:
+                    changes.append(c)
+        minus.clear(); plus.clear()
+
+    for line in diff.splitlines():
+        if line.startswith("+++ b/"):
+            flush()
+            cur = line[6:]
+            p = repo_dir / cur
+            raw = p.read_text() if p.exists() else ""
+            title = kb_core.parse_front_matter(raw)[0].get("title", cur)
+            new_lines = raw.splitlines()
+            files.setdefault(cur, [])
+        elif line.startswith(("---", "diff ", "index ")):
+            continue
+        elif (m := HUNK.match(line)) and cur:
+            flush()
+            start, count = int(m.group(1)), int(m.group(2) or 1)
+            ln = new_lines[start - 1] if 0 < start <= len(new_lines) else ""
+            if ln.startswith("last_reviewed"):
+                continue
+            sec = section_at(new_lines, max(start, 1) + max(count, 1) - 1, title)
+            if sec not in files[cur]:
+                files[cur].append(sec)
+        elif line.startswith("-") and not line.startswith("-last_reviewed"):
+            minus.append(line[1:])
+        elif line.startswith("+") and not line.startswith("+last_reviewed"):
+            plus.append(line[1:])
+    flush()
+    t = T[lang]
+    risk = t["risk_num"].format(chg=", ".join(changes)) if changes else t["risk_text"]
+    if len(files) > 1:
+        risk += t["risk_multi"].format(n=len(files))
+    return {"files": files, "changes": changes, "risk": risk}
+
+
+def fmt_impact(imp: dict, lang: str) -> list[str]:
+    t = T[lang]
+    secs = [f"`{f}` § {s}" for f, ss in imp["files"].items() for s in ss]
+    return [t["impact"],
+            "- " + t["impact_files"].format(n=len(imp["files"]), files=", ".join(f"`{f}`" for f in imp["files"])),
+            "- " + t["impact_secs"].format(secs="; ".join(secs) or "—"),
+            f"- {t['risk']}: {imp['risk']}"]
+
+
 # ---------------------------------------------------------------- the coding loop
 TOOLS = [
     {"type": "function", "function": {"name": "search_kb", "description": "BM25 search over KB sections. Search for the OLD value too, to find every copy of a fact.",
@@ -108,12 +269,14 @@ CURATOR_SYS = """You are kb-curator, a careful coding agent that maintains a com
 A person in the team chat stated a correction or resolved a conflict. Your job:
 - Find EVERY file that states the affected fact (use grep for the old value and search_kb with different phrasings). Facts are often duplicated in FAQs and macros.
 - Edit minimally: change only what the correction covers. Do not invent anything the person did not say.
+- Keep each document in its own language (a Chinese doc stays Chinese, an English doc stays English), even if the correction was said in the other language.
 - Set last_reviewed to {today} in each file you change. Keep the rest of the front matter.
 - Then call done. Today is {today}."""
 
 
 class Workspace:
-    def __init__(self, pid: str):
+    def __init__(self, pid: str, lang: str | None = None):
+        self.lang = lang  # en and zh are separate example KBs: a correction only touches docs in its language
         self.dir = WORK / pid
         self.branch = f"kb/{pid}"
         if self.dir.exists():
@@ -130,14 +293,22 @@ class Workspace:
             raise ValueError("path outside KB")
         return p
 
+    def in_scope(self, rel: str) -> bool:
+        if not self.lang:
+            return True
+        p = self.dir / rel
+        meta = kb_core.parse_front_matter(p.read_text())[0] if p.exists() else {}
+        return kb_core.doc_lang(meta, rel) == self.lang
+
     def call(self, name: str, a: dict) -> str:
         if name == "search_kb":
             self.index.build()
-            return "\n".join(f"{s.cite} (owner {s.meta.get('owner')}): {s.text[:200]}" for _, s in self.index.search(a["query"])) or "no hits"
+            return "\n".join(f"{s.cite} (owner {s.meta.get('owner')}): {s.text[:200]}"
+                             for _, s in self.index._search(a["query"], 6, self.lang)) or "no hits"
         if name == "grep":
             out = []
             for p in self.dir.rglob("*.md"):
-                if ".git" in p.parts:
+                if ".git" in p.parts or not self.in_scope(str(p.relative_to(self.dir))):
                     continue
                 for i, line in enumerate(p.read_text().splitlines(), 1):
                     if a["text"].lower() in line.lower():
@@ -149,14 +320,16 @@ class Workspace:
             p = self.safe(a["path"])
             if not p.exists():
                 return "refused: only existing files can be edited in this demo"
+            if not self.in_scope(a["path"]):
+                return f"refused: {a['path']} belongs to the other-language KB, which is maintained separately"
             p.write_text(a["content"].rstrip() + "\n")
             self.written.add(a["path"])
             return "ok"
         return "unknown tool"
 
 
-async def draft_fix(pid: str, instruction: str, context: str) -> dict | None:
-    ws = Workspace(pid)
+async def draft_fix(pid: str, instruction: str, context: str, lang: str = "en", scope: str | None = None) -> dict | None:
+    ws = Workspace(pid, scope)
     today = dt.date.today().isoformat()
     msgs = [{"role": "system", "content": CURATOR_SYS.format(today=today)},
             {"role": "user", "content": f"Chat thread:\n{context}\n\nCorrection to apply:\n{instruction}"}]
@@ -197,9 +370,10 @@ async def draft_fix(pid: str, instruction: str, context: str) -> dict | None:
     diff = git(KB_REPO, "diff", "main", ws.branch, "--", ".")
     stat = git(KB_REPO, "diff", "--shortstat", "main", ws.branch)
     owners = sorted({kb_core.parse_front_matter((ws.dir / f).read_text())[0].get("owner", "?") for f in ws.written})
+    imp = impact(ws.dir, "main", ws.branch, lang)
     return {"id": pid, "branch": ws.branch, "dir": str(ws.dir), "files": sorted(ws.written), "owners": owners,
             "title": result["title"], "summary": result.get("summary", ""), "diff": diff, "stat": stat,
-            "status": "open"}
+            "status": "open", "impact": imp, "lang": lang}
 
 
 def fmt_diff(diff: str, limit: int = 3500) -> str:
@@ -209,23 +383,24 @@ def fmt_diff(diff: str, limit: int = 3500) -> str:
 
 
 # ---------------------------------------------------------------- flows
-async def propose(thread: str | None, instruction: str, question: str, requested_by: str) -> None:
+async def propose(thread: str | None, instruction: str, question: str, requested_by: str, lang: str = "en",
+                  scope: str | None = None) -> None:
+    t = T[lang]
     async with lock:
         props = load(PROPS, {})
         pid = f"KB-{len(props) + 1}"
-        await agent.reply(f"On it: drafting **{pid}** from @{requested_by}'s correction. Checking every doc that states this fact…",
-                          thread_id=thread)
+        await agent.reply(t["drafting"].format(pid=pid, who=requested_by), thread_id=thread)
         context = await thread_text(thread)
-        prop = await draft_fix(pid, instruction, context)
+        prop = await draft_fix(pid, instruction, context, lang, scope or lang)
         if not prop:
-            await agent.reply("I couldn't find anything in the KB that this changes, so no edit was made.", thread_id=thread)
+            await agent.reply(t["nochange"], thread_id=thread)
             return
         prop.update(thread=thread, question=question, requested_by=requested_by,
                     created=dt.datetime.now().isoformat(timespec="minutes"))
         preview = ""
         if question:
             try:
-                out = await kb_core.answer(kb_core.KBIndex(prop["dir"]), question)
+                out = await kb_core.answer(kb_core.KBIndex(prop["dir"]), question, lang=kb_core.lang_of(question))
                 preview = re.sub(r"\s*\[\d+\]", "", out.get("answer", ""))
             except Exception as e:  # noqa: BLE001
                 log.warning("preview failed: %s", e)
@@ -236,11 +411,12 @@ async def propose(thread: str | None, instruction: str, question: str, requested
     tag = " ".join(f"@{u}" for u in who) or "an owner"
     body = [f"📝 **{pid} · {prop['title']}** — `{prop['branch']}` ({prop['stat'].strip()})",
             prop["summary"], "",
-            "Files: " + ", ".join(f"`{f}`" for f in prop["files"]) + f" · owner: **{', '.join(prop['owners'])}**",
+            f"{t['files']}: " + ", ".join(f"`{f}`" for f in prop["files"]) + f" · {t['owner']}: **{', '.join(prop['owners'])}**",
+            "", *fmt_impact(prop["impact"], lang), "",
             "```diff", fmt_diff(prop["diff"]), "```"]
     if preview:
-        body += [f"🔎 **Preview** — on this branch, kb-answerer would now say: _{preview}_"]
-    body += ["", f"{tag} please review. Reply `approve {pid}` to merge, or `reject {pid} <reason>`."]
+        body += [t["preview"].format(p=preview)]
+    body += ["", t["review"].format(tag=tag, pid=pid)]
     await agent.reply("\n".join(body), thread_id=thread)
 
 
@@ -249,16 +425,17 @@ async def decide(p: dict, verb: str, pid: str, reason: str, thread: str | None) 
     async with lock:
         props = load(PROPS, {})
         prop = props.get(pid)
+        lang = (prop or {}).get("lang") or kb_core.lang_of(p.get("body", ""))
+        t = T[lang]
         if not prop or prop["status"] != "open":
-            await agent.reply(f"{pid} isn't an open proposal.", thread_id=thread)
+            await agent.reply(t["notopen"].format(pid=pid), thread_id=thread)
             return
         appr = approvers()
         allowed = set().union(*[appr.get(o, set()) for o in prop["owners"]]) if prop["owners"] else set()
         if user not in allowed:
-            await agent.reply(
-                f"⛔ @{user} can't {verb} {pid}: it changes **{', '.join(prop['owners'])}** documents, "
-                f"which only {', '.join('@'+u for u in sorted(allowed)) or 'their owners'} can sign off. Nothing was merged.",
-                thread_id=thread)
+            await agent.reply(t["denied"].format(
+                user=user, verb=VERB_ZH.get(verb, verb) if lang == "zh" else verb, pid=pid, owners=", ".join(prop["owners"]),
+                allowed=", ".join("@" + u for u in sorted(allowed)) or "their owners"), thread_id=thread)
             return
         now = dt.datetime.now().isoformat(timespec="minutes")
         if verb.lower() == "reject":
@@ -266,12 +443,13 @@ async def decide(p: dict, verb: str, pid: str, reason: str, thread: str | None) 
             git(KB_REPO, "branch", "-D", prop["branch"], check=False)
             prop["status"] = "rejected"
             save(PROPS, props)
-            await agent.reply(f"🗑️ {pid} rejected by @{user}. Branch deleted; the KB is unchanged.", thread_id=thread)
+            await agent.reply(t["rejected"].format(pid=pid, user=user), thread_id=thread)
             await log_decision({"when": now, "id": pid, "title": prop["title"], "decision": f"rejected: {reason[:80]}", "by": user})
             return
         git(KB_REPO, "-c", "user.name=kb-curator", "-c", "user.email=kb-curator@example.invalid",
             "merge", "--no-ff", "-q", prop["branch"], "-m", f"Merge {pid}: {prop['title']}",
-            "-m", f"Approved-by: {user} in Switch room kb-ops\nRequested-by: {prop['requested_by']}")
+            "-m", f"Approved-by: {user} in Switch room kb-ops\nRequested-by: {prop['requested_by']}\n"
+                  f"Impact: {(prop.get('impact') or {}).get('risk', 'n/a')}")
         commit = git(KB_REPO, "rev-parse", "--short", "HEAD")
         git(KB_REPO, "worktree", "remove", "--force", prop["dir"], check=False)
         git(KB_REPO, "branch", "-d", prop["branch"], check=False)
@@ -279,14 +457,14 @@ async def decide(p: dict, verb: str, pid: str, reason: str, thread: str | None) 
         idx.refresh()
         prop.update(status="merged", commit=commit, approved_by=user)
         save(PROPS, props)
-    await agent.reply(f"✅ {pid} approved by @{user} and merged as `{commit}`. Index rebuilt: "
-                      f"{len(idx.sections)} sections from {len(idx.files)} docs. Logged to the room's *KB decision log*.",
+    await agent.reply(t["merged"].format(pid=pid, user=user, commit=commit, n=len(idx.sections), d=len(idx.files)),
                       thread_id=thread)
     await log_decision({"when": now, "id": pid, "title": prop["title"], "decision": "approved + merged", "by": user, "commit": commit})
     push = os.environ.get("KB_PUSH_REMOTE")
     if push:
         git(KB_REPO, "push", "-q", push, "main", check=False)
     if prop.get("question"):
+        await close_gap(prop["question"], pid)
         await agent.op("send_targeted_message", target_names=["kb-answerer"], thread_id=thread,
                        body=f"re-check: {prop['question']}")
 
@@ -296,7 +474,9 @@ async def classify(body: str, context: str) -> dict:
         {"role": "system", "content":
          "You watch a team chat where an AI answers questions from a knowledge base. Decide if the LAST message "
          "is a person stating that some KB fact is wrong/outdated or stating the correct value (a correction), "
-         "or answering a question about which of two conflicting facts is right. Return JSON "
+         "or answering a question about which of two conflicting facts is right. Messages may be in English or Chinese "
+         "(e.g. 'that's outdated, it's $65 now', '这个过时了，现在是每天 ¥120', '不对，应该是 30 天', '从 7 天改成 30 天'). "
+         "Questions, chit-chat and approvals are NOT corrections. Write `instruction` in the same language as the LAST message. Return JSON "
          '{"is_correction": bool, "instruction": str (the correction as one precise sentence, with the new values), '
          '"question": str (the original employee question this relates to, or "")}'},
         {"role": "user", "content": f"Thread so far:\n{context}\n\nLAST message: {body}"}], max_tokens=400)
@@ -322,31 +502,40 @@ async def on_message(data: dict, p: dict) -> None:
             who = sorted({u for o in owners for u in approvers().get(o, set())})
             tag = " ".join("@" + u for u in who) or "owners"
             pending[thread] = {"question": q}
+            lang = kb_core.lang_of(q)
             if kind == "CONFLICT":
-                await agent.reply(f"🧭 Two documents disagree, so I won't let the answer drift. {tag}: which value is correct? "
-                                  f"Reply in this thread and I'll draft the fix for every affected doc.", thread_id=thread)
+                await agent.reply(T[lang]["conflict"].format(tag=tag), thread_id=thread)
             else:
-                await agent.reply(f"🕳️ Knowledge gap logged for: _{q}_. Anyone who knows: reply in this thread and I'll draft a doc update.",
-                                  thread_id=thread)
+                asker = (re.search(r"asked by: ([\w.\-]+)", body) or [None, "?"])[1]
+                n = await log_gap(q, asker, lang)
+                await agent.reply(T[lang]["gap"].format(q=q, n=n), thread_id=thread)
         return
 
     m = APPROVE.search(body)
     if m:
-        await decide(p, m.group(1).lower(), f"KB-{m.group(2)}", m.group(3), thread)
+        verb = (m.group(1) or ZH_VERB.get(m.group(2), "approve")).lower()
+        await decide(p, verb, f"KB-{m.group(3)}", m.group(4), thread)
         return
 
-    if not (p.get("addressed") or HINT.search(body) or thread in pending):
+    if p.get("addressed") and STALE_CMD.search(body):
+        idx = kb_core.KBIndex(KB_REPO)
+        await agent.reply(kb_core.stale_report(idx, approvers(), kb_core.lang_of(strip_mentions(body))), thread_id=thread)
+        return
+
+    if not (p.get("addressed") or HINT.search(body) or ZH_HINT.search(body) or thread in pending):
         return
     context = await thread_text(thread)
     verdict = await classify(strip_mentions(body), context)
     log.info("classify: %s", verdict)
     if not verdict.get("is_correction"):
         if p.get("addressed"):
-            await agent.reply("I maintain the KB. Tell me what's wrong or what changed and I'll draft a reviewed fix.", thread_id=thread)
+            await agent.reply(T[kb_core.lang_of(strip_mentions(body))]["help"], thread_id=thread)
         return
     q = verdict.get("question") or pending.get(thread, {}).get("question", "")
     pending.pop(thread, None)
-    await propose(thread, verdict.get("instruction") or body, q, sender_handle(p))
+    lang = kb_core.lang_of(strip_mentions(body))
+    scope = kb_core.lang_of(q) if q else lang  # which language's KB the question was answered from
+    await propose(thread, verdict.get("instruction") or body, q, sender_handle(p), lang, scope)
 
 
 async def main() -> None:
