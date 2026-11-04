@@ -197,11 +197,11 @@ class Core(unittest.TestCase):
         entry = {"asker": "alice", "answer": "Meals cost $50 and take 7 days."}
         changes = ["$50 → $65", "7 days → 30 days", "$99 → $100"]
         en = curator.retro_message(entry, "KB-2", changes, "en")
-        self.assertIn("@alice correction: earlier I told you $50; KB-2 corrected it to $65.", en)
+        self.assertIn("@alice correction: earlier I told you $50 and 7 days; KB-2 corrected it to $65 and 30 days.", en)
         self.assertIn("7 days", en)
         self.assertNotIn("$99", en)
         zh = curator.retro_message(entry, "KB-2", changes, "zh")
-        self.assertIn("@alice 更正：之前我告诉你 $50，KB-2 已更正为 $65。", zh)
+        self.assertIn("@alice 更正：之前我告诉你 $50、7 days，KB-2 已更正为 $65、30 days。", zh)
         for lang, phrase, retry in [("en", "Updated answer: Fresh", "Please re-ask"),
                                     ("zh", "更新后的回答：Fresh", "请重新提问")]:
             self.assertIn(phrase, curator.retro_message(entry, "KB-2", [], lang, "Fresh"))
@@ -220,6 +220,19 @@ class Core(unittest.TestCase):
         self.assertIn("zh/finance/travel-expense-policy.md", rep)
         rows = kb_core.stale_docs(self.idx)
         self.assertNotIn("support/support-macros.md", [r["path"] for r in rows])
+
+
+    def test_impact_risk_new_content(self):
+        kb = self.kb
+        sh("git", "checkout", "-qb", "kb/N", cwd=kb)
+        p = kb / "finance/expense-policy.md"
+        p.write_text(p.read_text() + "\n## Parking\nParking is reimbursed up to **$15 per day**.\n")
+        sh("git", "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qam", "n", cwd=kb)
+        imp = curator.impact(kb, "main", "kb/N", "en")
+        sh("git", "checkout", "-q", "main", cwd=kb)
+        self.assertEqual(imp["changes"], [])
+        self.assertIn("new policy content", imp["risk"])
+        self.assertIn("$15", imp["risk"])
 
 
 if __name__ == "__main__":

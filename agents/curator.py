@@ -48,7 +48,7 @@ T = {
     "en": {
         'impact_retro': '{n} past answer(s) in {m} thread(s) will be corrected',
         'retro_done': '📣 Sent {n} correction(s) to past answers in {m} thread(s).',
-        'retro_numeric': '@{asker} correction: earlier I told you {old}; {pid} corrected it to {new}.',
+        'retro_numeric': '@{asker} correction: earlier I told you {old}; {pid} corrected it to {new}.', 'and': ' and ',
         'retro_updated': '@{asker} correction to my earlier answer: the knowledge base changed ({pid}). Updated answer: {new_answer}',
         'retro_retry': '@{asker} correction to my earlier answer: the knowledge base changed ({pid}). Please re-ask your question for an updated answer.',
         "new": "(new)",
@@ -68,12 +68,13 @@ T = {
         "help": "I maintain the KB. Tell me what's wrong or what changed and I'll draft a reviewed fix. Say `stale report` for docs overdue for review.",
         "impact": "**Impact**", "impact_files": "{n} file(s): {files}", "impact_secs": "Sections touched: {secs}",
         "risk": "Risk", "risk_num": "numeric policy value change ({chg}) — affects every answer that quotes it",
-        "risk_text": "wording-only change, no numbers changed", "risk_multi": "; {n} docs must stay in sync",
+        "risk_text": "wording-only change, no numbers changed",
+        "risk_new": "new policy content with values ({vals}); no existing value changed", "risk_multi": "; {n} docs must stay in sync",
     },
     "zh": {
         'impact_retro': '将更正 {m} 个帖子中的 {n} 条历史回答',
         'retro_done': '📣 已更正 {m} 个帖子中的 {n} 条历史回答。',
-        'retro_numeric': '@{asker} 更正：之前我告诉你 {old}，{pid} 已更正为 {new}。',
+        'retro_numeric': '@{asker} 更正：之前我告诉你 {old}，{pid} 已更正为 {new}。', 'and': '、',
         'retro_updated': '@{asker} 更正之前的回答：知识库已更新（{pid}）。更新后的回答：{new_answer}',
         'retro_retry': '@{asker} 更正之前的回答：知识库已更新（{pid}）。请重新提问以获取最新回答。',
         "new": "（新建）",
@@ -93,7 +94,8 @@ T = {
         "help": "我负责维护知识库。告诉我哪里不对或有什么变化，我会起草修订并请负责人审批。发送“复核报告”查看超期未复核的文档。",
         "impact": "**影响分析**", "impact_files": "{n} 个文件：{files}", "impact_secs": "涉及章节：{secs}",
         "risk": "风险", "risk_num": "数值类制度变更（{chg}），所有引用该数值的回答都会随之变化",
-        "risk_text": "仅文字调整，无数值变化", "risk_multi": "；{n} 篇文档需保持一致",
+        "risk_text": "仅文字调整，无数值变化",
+        "risk_new": "新增制度内容（{vals}），未改动已有数值", "risk_multi": "；{n} 篇文档需保持一致",
     },
 }
 VERB_ZH = {"approve": "批准", "reject": "驳回"}
@@ -225,6 +227,7 @@ def impact(repo_dir: Path, base: str, branch: str, lang: str = "en") -> dict:
     new_files = git(repo_dir, "diff", "--name-only", "--diff-filter=A", base, branch).splitlines()
     files: dict[str, list[str]] = {}
     changes: list[str] = []
+    added: list[str] = []  # brand-new policy values (e.g. a new section from a gap answer)
     cur, new_lines, title = None, [], ""
     minus: list[str] = []
     plus: list[str] = []
@@ -239,6 +242,8 @@ def impact(repo_dir: Path, base: str, branch: str, lang: str = "en") -> dict:
                 c = f"{a} → {b}"
                 if c not in changes:
                     changes.append(c)
+        if not o2:
+            added.extend(n for n in n2 if n not in added)
         minus.clear(); plus.clear()
 
     for line in diff.splitlines():
@@ -270,7 +275,8 @@ def impact(repo_dir: Path, base: str, branch: str, lang: str = "en") -> dict:
         raw = (repo_dir / f).read_text()
         files[f] = re.findall(r"^## +(.+)$", raw, re.M) or [kb_core.parse_front_matter(raw)[0].get("title", f)]
     t = T[lang]
-    risk = t["risk_num"].format(chg=", ".join(changes)) if changes else t["risk_text"]
+    risk = (t["risk_num"].format(chg=", ".join(changes)) if changes else
+            t["risk_new"].format(vals=", ".join(added)) if added else t["risk_text"])
     if len(files) > 1:
         risk += t["risk_multi"].format(n=len(files))
     return {"files": files, "new_files": new_files, "changes": changes, "risk": risk}
@@ -294,8 +300,8 @@ def retro_message(entry: dict, pid: str, changes: list[str], lang: str, new_answ
     t = T[lang]
     pairs = retro_pairs(entry, changes)
     if pairs:
-        return "; ".join(t["retro_numeric"].format(asker=entry["asker"], pid=pid, old=old, new=new)
-                         for old, new in pairs)
+        return t["retro_numeric"].format(asker=entry["asker"], pid=pid, old=t["and"].join(o for o, _ in pairs),
+                                         new=t["and"].join(n for _, n in pairs))
     return t["retro_updated" if new_answer else "retro_retry"].format(
         asker=entry["asker"], pid=pid, new_answer=new_answer)
 
