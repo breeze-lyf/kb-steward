@@ -125,7 +125,7 @@ Switch gateway and invite the two agents to the channel — no agent code change
   answer prompt returning JSON `{answer, used, confidence, conflict}`; index rebuilds whenever `HEAD` moves.
 * `agents/curator.py` — correction classifier, git worktree per proposal, tool-calling edit loop (only
   existing `.md` files can be written), preview answer from the branch, owner gate, merge, decision log.
-* LLM: any OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY`). Developed on Zhipu `glm-4.6`.
+* LLM: any OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY`). Developed on Zhipu `glm-4.6`; the demo run above used DeepSeek.
 
 ## Run it yourself
 
