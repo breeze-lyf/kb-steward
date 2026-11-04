@@ -66,7 +66,7 @@ Details: [proactive stewardship](docs/proactive-steward.md), [dashboard](docs/da
 
 ## Demo
 
-Demo video (v3, under 3:00): VIDEO_URL_V3 — placeholder, link added after upload.
+Demo video (v3, 2:45): [https://youtu.be/BU5vN0Acqbc](https://youtu.be/BU5vN0Acqbc)
 Previous versions: [v2](https://youtu.be/HDlKPY9HajU) · [v1](https://youtu.be/8xKwF6o_T2U).
 English storyboard: [DEMO.md](DEMO.md).
 Blog: [Teaching Two Agents to Fix the Wiki From Team Chat, on Switch](https://breeze-lyf.hashnode.dev/kb-steward-teaching-two-agents-to-fix-the-wiki-from-team-chat-on-switch).
