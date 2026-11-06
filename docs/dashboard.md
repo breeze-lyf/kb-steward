@@ -12,7 +12,37 @@ The Python standard-library server serves an English overview, `/doc?path=…`,
 `/api/summary`, `/login`, `/act`, and `/healthz`. It rebuilds the in-memory KB
 section index when main's full Git HEAD changes. Git operations only inspect
 HEAD, history and commit messages. Documents show escaped front matter and
-plain text; no document HTML executes. Charts and styles are embedded.
+plain text; no document HTML executes. Styles are embedded. There is no sample
+case: a step appears only when a state file or a commit that names the proposal
+records it.
+
+The overview leads with the strongest recorded closed loop, not with the
+figures. A case is a proposal id or a decision id. Ledger rows join it only by
+`corrected_by`, a `retro` answer id, or the same stored thread and question.
+Gap rows join it only by `gap_id` or a status that names the proposal. The five
+stages are question, correction proposal, owner approval, document update, and
+trace-back to the original thread. Each stage is **Recorded**, **Pending**, or
+**Not recorded**. `approved_by`, `decisions.json` field `by`, and an
+`Approved-by` trailer are approval evidence. A `Reviewed-by` trailer is not.
+The before/after panel uses `proposals.json` field `diff`, or the patch of a
+commit whose message names the proposal. A decision may cite some other
+commit; that hash is shown, and its patch is not. Answer bodies, proposal
+worktree paths, and credential values are not rendered.
+
+If no proposal or decision exists, the page says no closed-loop case is
+recorded and leaves all five stages empty. `DASH_RECORD_LABEL`, when set, is
+shown as a label and is not history. Footer links are the published demo
+videos and the English and Chinese blog posts.
+
+Publication follows the effective mode. `KB_SOURCE=github` with a repository
+slug and a configured token is GitHub pull-request mode: open `pr_open` records
+are listed, and the document is described as not yet updated. With no token,
+or with `KB_SOURCE` unset, the effective mode is local merge. The page says
+documents are updated in the local git repository and does not present an empty
+pull-request table. The next step is the next recorded action: approve an open
+proposal, wait for a recorded pull request to merge, or start from a new
+question. Figures for coverage, stale rate, conflicts, gaps, and reviews stay
+on the page, below the case. Review actions still require a signed-in approver.
 
 Data is read fresh from `KB_REPO` and `KBS_STATE_DIR`:
 

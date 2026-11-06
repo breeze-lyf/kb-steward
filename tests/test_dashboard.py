@@ -174,6 +174,18 @@ class DashboardFixture(unittest.TestCase):
             response = client.getresponse()
             self.assertEqual(response.status, 200, path)
             response.read()
+        client.request('POST', '/kb/act', urlencode({'path': 'old.md', 'choice': 'valid'}))
+        response = client.getresponse()
+        self.assertEqual(response.status, 403)
+        self.assertNotIn('Queued', response.read().decode())
+        self.assertFalse((self.state / 'review_queue.jsonl').exists())
+        bob = d.sign_cookie(self.app.secret, 'bob')
+        client.request('POST', '/kb/act', urlencode({'path': 'old.md', 'choice': 'valid', 'csrf': d.verify_cookie(self.app.secret, bob)['csrf']}),
+                       {'Cookie': 'kb_session=' + bob})
+        response = client.getresponse()
+        self.assertEqual(response.status, 403)
+        response.read()
+        self.assertFalse((self.state / 'review_queue.jsonl').exists())
         token = d.sign_cookie(self.app.secret, 'alice')
         csrf = d.verify_cookie(self.app.secret, token)['csrf']
         for fields, status in [({'path': 'old.md', 'choice': 'valid'}, 403),
@@ -197,6 +209,132 @@ class DashboardFixture(unittest.TestCase):
         self.assertEqual(response.status, 303)
         self.assertEqual(response.getheader('Location'), '/kb/')
         response.read()
+
+
+    def test_unlinked_records_stay_unlinked(self):
+        page = self.app.overview(None)
+        self.assertIn('does not name KB-1', page)
+        self.assertIn('no ledger row is linked to this proposal', page)
+        self.assertIn('decisions.json by is alice', page)
+        self.assertNotIn('/kb/act', page)
+        self.assertNotIn('Approved-by', page)
+        for url in ('https://youtu.be/BU5vN0Acqbc', 'https://youtu.be/HDlKPY9HajU', 'https://youtu.be/8xKwF6o_T2U',
+                    'https://breeze-lyf.hashnode.dev/kb-steward-teaching-two-agents-to-fix-the-wiki-from-team-chat-on-switch',
+                    'https://breeze-lyf.hashnode.dev/kb-steward-agent-switch'):
+            self.assertIn(url, page)
+        css = page
+        self.assertIn('@media (max-width:720px)', css)
+        self.assertNotIn('min-width:280px', css)
+        self.assertNotIn('linear-gradient', css)
+        self.assertNotIn('box-shadow', css)
+
+    def test_blank_local_mode_has_no_fabricated_case(self):
+        for name, value in (('answers.json', []), ('gaps.json', {'rows': []}), ('proposals.json', {}),
+                            ('decisions.json', {'rows': []}), ('conflicts.json', {'rows': []}), ('reviews.json', {'rows': []})):
+            self.write(name, value)
+        page = self.app.overview(None)
+        self.assertIn('No closed-loop case is recorded here', page)
+        self.assertIn('No diff is recorded, because there is no case.', page)
+        self.assertIn('local git repository', page)
+        self.assertIn('Not recorded', page)
+        self.assertIn('Nothing is waiting to publish', page)
+        self.assertNotIn('PR #', page)
+        self.assertNotIn('/kb/act', page)
+        self.assertNotIn('Approved-by', page)
+        self.assertIsNone(self.app.summary()['featured_case'])
+
+    def test_open_proposal_keeps_missing_approval_and_escapes_diff(self):
+        self.write('proposals.json', {'KB-9': {
+            'id': 'KB-9', 'status': 'open', 'title': 'Raise the cap', 'question': 'What is the cap?',
+            'requested_by': 'sam', 'created': '2026-04-01T10:00', 'owners': ['finance'], 'files': ['old.md', 'missing.md'],
+            'dir': '/tmp/PRIVATE-WORKTREE', 'summary': 'Change the stored line.',
+            'diff': '--- a/old.md\n+++ b/old.md\n@@\n-Old line\n+New line <script>alert(1)</script>\n'}})
+        self.write('decisions.json', {'rows': []})
+        self.write('answers.json', [{'id': 'A-9', 'question': 'What is the cap?', 'answer': 'PRIVATE-LEDGER-BODY',
+                                     'thread': 'thread-should-not-count', 'status': 'active', 'when': '2026-04-01',
+                                     'cites': [{'path': 'old.md'}]}])
+        page = self.app.overview(None)
+        blob = page + json.dumps(self.app.summary())
+        self.assertIn('No approver is recorded. The proposal is still open.', page)
+        self.assertIn('Pending', page)
+        self.assertIn('Old line', page)
+        self.assertIn('New line', page)
+        self.assertIn('&lt;script&gt;', page)
+        self.assertNotIn('<script>', page)
+        self.assertNotIn('<img', page)
+        self.assertNotIn('Approved-by', page)
+        self.assertNotIn('PRIVATE-LEDGER-BODY', blob)
+        self.assertNotIn('PRIVATE-WORKTREE', blob)
+        self.assertNotIn('thread-should-not-count', blob)
+        self.assertNotIn('/kb/act', page)
+        self.assertIn('recorded path, not in this repository', page)
+        self.assertEqual(d.safe_http('javascript:alert(1)'), '')
+        self.assertEqual(d.safe_http('https://user:pass@example.test/a'), '')
+
+    def test_named_commit_shows_real_diff_approval_and_thread(self):
+        (self.repo / 'old.md').write_text('---\ntitle: Policy\nowner: finance\nlast_reviewed: 2020-01-01\n---\n\n## Meal\nThe cap is $65.\n')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'Merge KB-7: Raise the cap', '-m', 'Proposal: KB-7\nApproved-by: mina in Switch room kb-ops')
+        sha = self.git('rev-parse', 'HEAD')
+        self.write('proposals.json', {'KB-7': {
+            'id': 'KB-7', 'status': 'merged', 'title': 'Raise the cap', 'question': 'What is the meal cap?',
+            'requested_by': 'sam', 'created': '2026-05-01T09:00', 'approved_by': 'mina', 'owners': ['finance'],
+            'files': ['old.md'], 'commit': sha, 'thread': 'room-thread-1', 'retro': ['A-7'],
+            'dir': '/tmp/PRIVATE-WORKTREE'}})
+        self.write('decisions.json', {'rows': [{
+            'id': 'KB-7', 'when': '2026-05-01T12:00', 'by': 'mina', 'commit': sha,
+            'title': 'Raise the cap; Retro-corrected: 1 answers in 1 threads',
+            'decision': 'approved + merged', 'kind': 'merged'}]})
+        self.write('answers.json', [{'id': 'A-7', 'thread': 'room-thread-1', 'asker': 'newhire',
+                                     'question': 'What is the meal cap?', 'answer': 'PRIVATE-LEDGER-BODY',
+                                     'cites': [{'path': 'old.md', 'section': 'Meal'}], 'when': '2026-04-01',
+                                     'status': 'corrected', 'corrected_by': 'KB-7'}])
+        self.write('gaps.json', {'rows': []})
+        page = self.app.overview(None)
+        blob = page + json.dumps(self.app.summary())
+        self.assertEqual(self.app.summary()['featured_case']['id'], 'KB-7')
+        self.assertIn('already merged in the local repository', page)
+        self.assertIn('The cap is $65.', page)
+        self.assertIn('Diff source: commit', page)
+        self.assertIn('room-thread-1', page)
+        self.assertIn('Approved-by is mina', page)
+        self.assertIn('proposals.json approved_by is mina', page)
+        self.assertNotIn('PRIVATE-LEDGER-BODY', blob)
+        self.assertNotIn('PRIVATE-WORKTREE', blob)
+        self.assertNotIn('<script>', page)
+        self.assertNotIn('<unsafe>', page)
+
+    def test_publication_mode_does_not_leak_or_invent_a_pull_request(self):
+        self.write('proposals.json', {'KB-3': {
+            'id': 'KB-3', 'status': 'pr_open', 'title': 'Ship the note', 'question': 'Where is the note?',
+            'pr_url': 'javascript:alert(1)', 'pr_number': 4, 'owners': ['finance'], 'files': ['old.md']}})
+        self.write('decisions.json', {'rows': []})
+        env = {'KB_SOURCE': 'github', 'GITHUB_REPO': 'acme/docs', 'GITHUB_TOKEN': 'super-secret-token',
+               'GITHUB_TOKEN_FILE': '/tmp/does-not-exist-kb-token'}
+        with patch.dict(os.environ, env):
+            page = self.app.overview(None)
+            blob = page + json.dumps(self.app.summary())
+        self.assertIn('https://github.com/acme/docs', page)
+        self.assertIn('The document is not updated until it merges.', page)
+        self.assertIn('KB-3 (link omitted)', page)
+        self.assertNotIn('javascript:', blob)
+        self.assertNotIn('super-secret-token', blob)
+        publication = page.split('Publication', 1)[1].split('Figures', 1)[0]
+        self.assertNotIn('<table', publication)
+        with patch.dict(os.environ, {'KB_SOURCE': 'github', 'GITHUB_REPO': 'acme/docs', 'GITHUB_TOKEN': '',
+                                      'GITHUB_TOKEN_FILE': '/tmp/does-not-exist-kb-token'}):
+            fallback = self.app.overview(None)
+        self.assertIn('effective mode is local merge', fallback)
+        self.assertIn('not the publisher while the effective mode is local', fallback)
+        self.assertNotIn('super-secret-token', fallback)
+
+    def test_record_label_is_an_example_marker_not_history(self):
+        with patch.dict(os.environ, {'DASH_RECORD_LABEL': '<script>local fixture</script>'}):
+            page = self.app.overview(None)
+        self.assertIn('Labeled source:', page)
+        self.assertIn('This is not production activity.', page)
+        self.assertIn('&lt;script&gt;local fixture', page)
+        self.assertNotIn('<script>', page)
 
 
 if __name__ == '__main__':
